@@ -16,12 +16,6 @@ Source Files → tree-sitter WASM AST → SQLite (WAL + FTS5) → MCP Server (JS
 ## Install
 
 ```bash
-npm install -g mini-codegraph
-```
-
-Or build from source:
-
-```bash
 git clone https://github.com/Kei-Li/mini-codegraph.git
 cd mini-codegraph
 npm install

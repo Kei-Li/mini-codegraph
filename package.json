@@ -2,6 +2,18 @@
   "name": "mini-codegraph",
   "version": "0.1.0",
   "description": "A lightweight code knowledge graph built from scratch — tree-sitter AST parsing, SQLite graph storage, MCP server.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Kei-Li/mini-codegraph.git"
+  },
+  "homepage": "https://github.com/Kei-Li/mini-codegraph#readme",
+  "bugs": {
+    "url": "https://github.com/Kei-Li/mini-codegraph/issues"
+  },
+  "engines": {
+    "node": ">=22"
+  },
   "type": "module",
   "bin": {
     "mini-cg": "./dist/cli.js"
