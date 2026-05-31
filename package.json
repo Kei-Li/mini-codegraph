@@ -1,0 +1,29 @@
+{
+  "name": "mini-codegraph",
+  "version": "0.1.0",
+  "description": "A lightweight code knowledge graph built from scratch — tree-sitter AST parsing, SQLite graph storage, MCP server.",
+  "type": "module",
+  "bin": {
+    "mini-cg": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "grammars"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/cli.js",
+    "prepublishOnly": "tsc"
+  },
+  "dependencies": {
+    "chokidar": "^4.0.3",
+    "commander": "^13.1.0",
+    "ignore": "^7.0.4",
+    "picomatch": "^4.0.2",
+    "web-tree-sitter": "^0.22.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.1",
+    "typescript": "^5.8.3"
+  }
+}
