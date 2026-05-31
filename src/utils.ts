@@ -27,7 +27,7 @@ export function loadGitignore(root: string): (path: string) => boolean {
     ig.add(content)
   } catch {
     // No .gitignore, use sensible defaults
-    ig.add(['node_modules', 'dist', 'build', '.git', 'target', '.codegraph'])
+    ig.add(['node_modules', 'dist', 'build', '.git', 'target', '.codegraph', '.venv', 'venv', '__pycache__'])
   }
 
   return (path: string) => {

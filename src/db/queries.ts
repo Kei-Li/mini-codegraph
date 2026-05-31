@@ -43,6 +43,12 @@ export class QueryManager {
     return rows.map(mapRowToNode)
   }
 
+  searchNodesWithRank(query: string, limit = 20): { node: CodeGraphNode; rank: number }[] {
+    const stmt = this.db.prepare(Q.SEARCH_NODES)
+    const rows = stmt.all(query, limit) as Record<string, any>[]
+    return rows.map(r => ({ node: mapRowToNode(r), rank: r.rank as number }))
+  }
+
   getNode(id: string): CodeGraphNode | undefined {
     const stmt = this.db.prepare(Q.GET_NODE_BY_ID)
     const row = stmt.get(id) as Record<string, any> | undefined
@@ -91,6 +97,18 @@ export class QueryManager {
     return rows.map(mapRowToFile)
   }
 
+  getAllNodes(): CodeGraphNode[] {
+    const stmt = this.db.prepare(Q.GET_ALL_NODES)
+    const rows = stmt.all() as Record<string, any>[]
+    return rows.map(mapRowToNode)
+  }
+
+  getFileDependencies(filePath: string): string[] {
+    const stmt = this.db.prepare(Q.GET_FILE_DEPENDENCIES)
+    const rows = stmt.all(filePath) as Record<string, any>[]
+    return rows.map(r => r.file_path)
+  }
+
   getStats(): { files: number; nodes: number; edges: number } {
     const files = this.db.prepare(Q.COUNT_FILES).get() as Record<string, any>
     const nodes = this.db.prepare(Q.COUNT_NODES).get() as Record<string, any>
@@ -125,5 +143,10 @@ export class QueryManager {
     this.db.prepare(Q.DELETE_FILE_EDGES).run(filePath, filePath)
     this.db.prepare(Q.DELETE_FILE_NODES).run(filePath)
     this.db.prepare(Q.DELETE_FILE_RECORD).run(filePath)
+  }
+
+  resolveCallEdges(): number {
+    const info = this.db.prepare(Q.RESOLVE_CALL_EDGES).run()
+    return Number(info.changes)
   }
 }

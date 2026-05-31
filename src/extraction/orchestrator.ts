@@ -5,6 +5,8 @@ import type { QueryManager } from '../db/queries.js'
 import { GrammarLoader } from './grammar-loader.js'
 import { parseJavaFile } from './languages/java.js'
 import { parseTypeScriptFile } from './languages/typescript.js'
+import { parsePythonFile } from './languages/python.js'
+import { parseVueFile } from './languages/vue.js'
 import { findFiles, loadGitignore, computeContentHash, languageForFile } from '../utils.js'
 import type { CodeGraphNode, CodeGraphEdge, FileRecord, ExtractionResult } from '../types.js'
 
@@ -31,6 +33,16 @@ export class ExtractionOrchestrator {
 
     const result: ExtractionResult = { nodes: [], edges: [], errors: [] }
     let indexedCount = 0
+    const startTime = Date.now()
+
+    const updateProgress = () => {
+      const pct = ((indexedCount / files.length) * 100).toFixed(1)
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
+      const barLen = 20
+      const filled = Math.round((indexedCount / files.length) * barLen)
+      const bar = '█'.repeat(filled) + '░'.repeat(barLen - filled)
+      process.stderr.write(`\r[${bar}] ${pct}% (${indexedCount}/${files.length}) ${elapsed}s`)
+    }
 
     for (const filePath of files) {
       try {
@@ -39,12 +51,22 @@ export class ExtractionOrchestrator {
         result.edges.push(...fileResult.edges)
         result.errors.push(...fileResult.errors)
         indexedCount++
+        updateProgress()
       } catch (e) {
         result.errors.push(`Error indexing ${filePath}: ${e}`)
+        indexedCount++
+        updateProgress()
       }
     }
 
-    console.error(`Indexed ${indexedCount}/${files.length} files`)
+    const totalTime = ((Date.now() - startTime) / 1000).toFixed(1)
+    process.stderr.write(`\nIndexed ${indexedCount}/${files.length} files in ${totalTime}s\n`)
+
+    const resolved = this.queries.resolveCallEdges()
+    if (resolved > 0) {
+      process.stderr.write(`Resolved ${resolved} call edges\n`)
+    }
+
     return result
   }
 
@@ -68,7 +90,11 @@ export class ExtractionOrchestrator {
 
       const parseResult = lang.name === 'java'
         ? parseJavaFile(tree, source, relPath, lang.name)
-        : parseTypeScriptFile(tree, source, relPath, lang.name)
+        : lang.name === 'python'
+          ? parsePythonFile(tree, source, relPath, lang.name)
+          : lang.name === 'vue'
+            ? parseVueFile(parser, source, relPath, lang.name)
+            : parseTypeScriptFile(tree, source, relPath, lang.name)
 
       // Store in transaction
       this.db.transaction(() => {

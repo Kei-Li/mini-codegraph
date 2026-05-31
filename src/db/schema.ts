@@ -114,7 +114,7 @@ export const INSERT_EDGE = `
 export const GET_FILE = `SELECT * FROM files WHERE path = ?`
 export const GET_ALL_FILES = `SELECT * FROM files`
 export const SEARCH_NODES = `
-  SELECT n.* FROM nodes n
+  SELECT n.*, rank FROM nodes n
   INNER JOIN nodes_fts f ON n.rowid = f.rowid
   WHERE nodes_fts MATCH ?
   ORDER BY rank
@@ -144,8 +144,17 @@ export const GET_FILE_DEPENDENCIES = `
   INNER JOIN edges e ON e.target = n.id
   WHERE e.source = ? AND e.kind = 'imports'
 `
+export const GET_ALL_NODES = `SELECT * FROM nodes`
 export const COUNT_NODES = `SELECT COUNT(*) as count FROM nodes`
 export const COUNT_EDGES = `SELECT COUNT(*) as count FROM edges`
 export const COUNT_FILES = `SELECT COUNT(*) as count FROM files`
 export const GET_METADATA = `SELECT value FROM project_metadata WHERE key = ?`
 export const SET_METADATA = `INSERT OR REPLACE INTO project_metadata (key, value) VALUES (?, ?)`
+export const RESOLVE_CALL_EDGES = `
+  UPDATE edges SET target = (
+    SELECT id FROM nodes WHERE id LIKE edges.target || ':%' LIMIT 1
+  )
+  WHERE kind = 'calls'
+    AND target NOT LIKE ':%'
+    AND EXISTS (SELECT 1 FROM nodes WHERE id LIKE edges.target || ':%')
+`

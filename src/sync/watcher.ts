@@ -1,7 +1,7 @@
-import { watch } from 'chokidar'
 import { relative } from 'node:path'
-import { isSupportedFile, languageForFile } from '../utils.js'
+import { isSupportedFile } from '../utils.js'
 import type { ExtractionOrchestrator } from '../extraction/orchestrator.js'
+import { watch } from 'chokidar'
 
 export interface WatchEvent {
   type: 'add' | 'change' | 'unlink'
@@ -16,17 +16,30 @@ export class FileWatcher {
   private pendingEvents: WatchEvent[] = []
   private callback: WatchCallback | null = null
   private projectRoot = ''
+  private static instance: FileWatcher | null = null
+
+  constructor() {
+    if (FileWatcher.instance) return FileWatcher.instance
+    FileWatcher.instance = this
+  }
+
+  static getInstance(): FileWatcher {
+    if (!FileWatcher.instance) {
+      FileWatcher.instance = new FileWatcher()
+    }
+    return FileWatcher.instance
+  }
 
   start(projectRoot: string, orchestrator: ExtractionOrchestrator, callback: WatchCallback): void {
     this.projectRoot = projectRoot
     this.callback = callback
 
     this.watcher = watch(projectRoot, {
-      ignored: /(^|[/\\])(node_modules|dist|build|\.git|target|\.codegraph)[/\\]/,
+      ignored: /(^|[/\\])(node_modules|dist|build|\.git|target|\.codegraph|\.venv|__pycache__)[/\\]/,
       persistent: true,
       ignoreInitial: true,
       awaitWriteFinish: {
-        stabilityThreshold: 500,
+        stabilityThreshold: 300,
         pollInterval: 100,
       },
     })
@@ -44,6 +57,7 @@ export class FileWatcher {
   }
 
   stop(): void {
+    this.flush()
     if (this.watcher) {
       this.watcher.close()
       this.watcher = null
@@ -54,10 +68,13 @@ export class FileWatcher {
     }
   }
 
+  getPendingCount(): number {
+    return this.pendingEvents.length
+  }
+
   private queueEvent(type: WatchEvent['type'], fullPath: string): void {
     const filePath = relative(this.projectRoot, fullPath).replace(/\\/g, '/')
 
-    // Replace existing pending event for same file
     this.pendingEvents = this.pendingEvents.filter(e => e.filePath !== filePath)
     this.pendingEvents.push({ type, filePath })
 

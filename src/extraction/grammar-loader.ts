@@ -1,9 +1,11 @@
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import Parser from 'web-tree-sitter'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
+
+const GRAMMAR_CDN = 'https://cdn.jsdelivr.net/npm/@tree-sitter-grammars'
 
 export class GrammarLoader {
   private initialized = false
@@ -32,26 +34,55 @@ export class GrammarLoader {
       await this.init()
     }
 
-    const parser = new Parser()
-    const wasmPath = findWasmPath(`tree-sitter-${language}.wasm`)
+    let wasmPath = findWasmPath(`tree-sitter-${language}.wasm`)
+
+    if (!wasmPath || !existsSync(wasmPath)) {
+      await this.downloadGrammar(language)
+      wasmPath = findWasmPath(`tree-sitter-${language}.wasm`)
+    }
 
     if (wasmPath && existsSync(wasmPath)) {
       const wasmBytes = readFileSync(wasmPath)
       const Lang = await Parser.Language.load(wasmBytes)
+      const parser = new Parser()
       parser.setLanguage(Lang)
+      this.parsers.set(language, parser)
+      return parser
     } else {
       throw new Error(
         `Grammar for "${language}" not found at grammars/tree-sitter-${language}.wasm`
       )
     }
-
-    this.parsers.set(language, parser)
-    return parser
   }
 
   hasGrammar(language: string): boolean {
     const wasmPath = findWasmPath(`tree-sitter-${language}.wasm`)
     return (wasmPath && existsSync(wasmPath)) || false
+  }
+
+  private async downloadGrammar(language: string): Promise<void> {
+    const filename = `tree-sitter-${language}.wasm`
+    const grammarsDir = findGrammarsDir()
+    if (!grammarsDir) {
+      throw new Error(`Cannot find grammars directory to save ${filename}`)
+    }
+
+    const url = `${GRAMMAR_CDN}/${language}-wasm@latest/${filename}`
+    console.error(`Downloading grammar: ${url}`)
+
+    try {
+      const response = await fetch(url)
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const buffer = await response.arrayBuffer()
+      const targetPath = join(grammarsDir, filename)
+      if (!existsSync(grammarsDir)) {
+        mkdirSync(grammarsDir, { recursive: true })
+      }
+      writeFileSync(targetPath, Buffer.from(buffer))
+      console.error(`Downloaded grammar to ${targetPath}`)
+    } catch (e) {
+      throw new Error(`Failed to download grammar for "${language}" from ${url}: ${e}`)
+    }
   }
 }
 
@@ -68,4 +99,18 @@ function findWasmPath(filename: string): string | null {
   }
 
   return null
+}
+
+function findGrammarsDir(): string | null {
+  const candidates = [
+    join(__dirname, '..', '..', '..', 'grammars'),
+    join(__dirname, '..', '..', 'grammars'),
+    join(process.cwd(), 'grammars'),
+  ]
+
+  for (const dir of candidates) {
+    if (existsSync(dir)) return dir
+  }
+  // Create in project root's grammars directory
+  return candidates[candidates.length - 1]
 }

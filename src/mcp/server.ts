@@ -1,4 +1,4 @@
-import type { StdioTransport } from './transport.js'
+import type { Transport } from './types.js'
 import type { GraphQueryManager } from '../graph/queries.js'
 import { createTools, type ToolDefinition } from './tools.js'
 
@@ -17,12 +17,12 @@ export interface JSONRPCResponse {
 }
 
 export class MCPServer {
-  private transport: StdioTransport
+  private transport: Transport
   private graph: GraphQueryManager
   private tools: ToolDefinition[] = []
   private initialized = false
 
-  constructor(transport: StdioTransport, graph: GraphQueryManager) {
+  constructor(transport: Transport, graph: GraphQueryManager) {
     this.transport = transport
     this.graph = graph
     this.tools = createTools(graph)
@@ -42,6 +42,7 @@ export class MCPServer {
       switch (method) {
         case 'initialize':
           this.initialized = true
+          this.graph.checkStaleFiles()
           this.sendResponse(id, {
             protocolVersion: '2024-11-05',
             capabilities: {
@@ -57,14 +58,25 @@ export class MCPServer {
               version: '0.1.0',
             },
             instructions: [
-              'mini-codegraph provides code intelligence through a knowledge graph built from AST parsing.',
+              'mini-codegraph provides code intelligence through a knowledge graph built from AST parsing. It pre-indexes your codebase — a search/grep/read loop repeats work it already did.',
               '',
-              'Key guidelines:',
-              '- Use codegraph_context FIRST when asked about code structure or understanding a feature',
-              '- Use codegraph_search to find symbols by name across the codebase',
-              '- Use codegraph_trace to find call paths between two functions',
-              '- Use codegraph_callers/codegraph_callees for direct call relationships',
-              '- Results are from tree-sitter AST parsing — they are accurate for well-formed code',
+              'Tool selection by intent:',
+              '- codegraph_context: map an area, understand a task, build comprehensive context (includes callers, callees, implementations, cross-service calls)',
+              '- codegraph_trace: "how does X reach Y?" — finds call paths between two symbols with dynamic-dispatch hops (interface→impl, callbacks, React re-render)',
+              '- codegraph_explore: survey several related symbols grouped by file, plus a relationship map',
+              '- codegraph_search: find symbols by name across the codebase',
+              '- codegraph_callers / codegraph_callees: walk call flow one direction at a time',
+              '- codegraph_impact: check blast radius before editing (callers + transitive dependents)',
+              '- codegraph_node: get details about a single symbol (optionally with source code)',
+              '- codegraph_files: list indexed file structure (faster than filesystem ls)',
+              '- codegraph_status: check index health and statistics',
+              '',
+              'Usage rules:',
+              '- Answer structural questions directly with these tools — do NOT fall back to grep/read exploration for things the graph already knows.',
+              '- Treat returned source as already read; do not re-read files the graph returned.',
+              '- For exploration questions ("how does X work?", "explain Y system"), delegate to an Explore sub-agent rather than calling codegraph_context or codegraph_explore directly in the main session.',
+              '- For targeted lookups before editing, use lightweight tools directly in the main session: codegraph_search, codegraph_callers/callees, codegraph_impact, codegraph_node.',
+              '- Results are from tree-sitter AST parsing — they are accurate for well-formed code.',
             ].join('\n'),
           })
           break
@@ -91,6 +103,10 @@ export class MCPServer {
 
           try {
             const result = await tool.handler(toolArgs, this.graph)
+            const warning = this.graph.getStalenessWarning()
+            if (warning) {
+              result._warning = warning
+            }
             this.sendResponse(id, {
               content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
             })
@@ -101,7 +117,6 @@ export class MCPServer {
         }
 
         case 'notifications/initialized':
-          // Client is ready
           break
 
         case 'shutdown':

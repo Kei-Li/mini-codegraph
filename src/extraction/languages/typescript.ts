@@ -305,7 +305,7 @@ export function parseTypeScriptFile(
       if (!nameNode) return
       const callName = nameNode.text
 
-      const callerInfo = findEnclosingScope(node)
+      const callerInfo = findEnclosingScope(node, filePath)
       if (callerInfo) {
         edges.push({
           source: callerInfo,
@@ -364,9 +364,11 @@ export function parseTypeScriptFile(
   }
 
   function walkChildren(): void {
-    for (let i = 0; i < cursor.currentNode.namedChildCount; i++) {
-      const wc = cursor.gotoFirstChild()
-      if (wc) { visit(); cursor.gotoParent() }
+    if (cursor.gotoFirstChild()) {
+      do {
+        visit()
+      } while (cursor.gotoNextSibling())
+      cursor.gotoParent()
     }
   }
 
@@ -428,7 +430,7 @@ function findAncestorVariable(node: any, _cursor: Parser.TreeCursor): string | n
   return null
 }
 
-function findEnclosingScope(node: any): string | null {
+function findEnclosingScope(node: any, filePath: string): string | null {
   let p = node.parent
   while (p) {
     if (p.type === 'function_declaration' || p.type === 'method_definition' ||
@@ -437,7 +439,7 @@ function findEnclosingScope(node: any): string | null {
         c.type === 'name' || c.type === 'property' || c.type === 'identifier'
       )
       const name = nameNode?.text ?? 'anonymous'
-      return `${p.startPosition.row + 1}`
+      return `${filePath}:${name}:${p.startPosition.row + 1}`
     }
     p = p.parent
   }

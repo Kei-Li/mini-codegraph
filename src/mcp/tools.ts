@@ -133,10 +133,10 @@ export function createTools(graph: GraphQueryManager): ToolDefinition[] {
           from: { name: fromNode.name, filePath: fromNode.filePath },
           to: { name: toNode.name, filePath: toNode.filePath },
           paths: paths.map(path => path.map(n => ({
-            name: n.name,
-            kind: n.kind,
-            filePath: n.filePath,
-            lines: `${n.startLine}-${n.endLine}`,
+            name: n.node.name,
+            kind: n.node.kind,
+            filePath: n.node.filePath,
+            lines: `${n.node.startLine}-${n.node.endLine}`,
           }))),
         }
       },
@@ -282,6 +282,52 @@ export function createTools(graph: GraphQueryManager): ToolDefinition[] {
       },
       handler: async () => {
         return { stats: graph.getStats() }
+      },
+    },
+    {
+      name: 'codegraph_explore',
+      description: 'Return source for several related symbols grouped by file, plus a relationship map, in one call.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          symbols: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Array of symbol names to explore (e.g. ["UserService", "login"])',
+          },
+        },
+        required: ['symbols'],
+      },
+      handler: async (args) => {
+        const symbols: string[] = args.symbols ?? []
+        if (symbols.length === 0) return { files: [] }
+
+        const nodeIds: string[] = []
+        for (const name of symbols) {
+          const results = graph.search(name, 3)
+          for (const r of results) {
+            if (!nodeIds.includes(r.node.id)) nodeIds.push(r.node.id)
+          }
+        }
+
+        const related = graph.findRelated(nodeIds.slice(0, 20))
+        const files = new Map<string, any[]>()
+
+        for (const [id, info] of related) {
+          const fp = info.node.filePath
+          if (!files.has(fp)) files.set(fp, [])
+          files.get(fp)!.push({
+            id,
+            name: info.node.name,
+            kind: info.node.kind,
+            lines: `${info.node.startLine}-${info.node.endLine}`,
+            relationships: info.relationships,
+          })
+        }
+
+        return {
+          files: Array.from(files.entries()).map(([fp, nodes]) => ({ filePath: fp, nodes })),
+        }
       },
     },
   ]

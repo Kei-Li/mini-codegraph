@@ -94,8 +94,7 @@ export function parseJavaFile(
       }
 
       classStack.push(nodeId)
-      const wc = cursor.gotoFirstChild()
-      if (wc) { visit(); cursor.gotoParent() }
+      visitChildren()
       classStack.pop()
       return
     }
@@ -136,6 +135,8 @@ export function parseJavaFile(
       if (parentId) {
         edges.push({ source: parentId, target: nodeId, kind: 'contains', line: range.startLine, col: range.startColumn, metadata: '{}' })
       }
+
+      visitChildren()
       return
     }
 
@@ -223,9 +224,15 @@ export function parseJavaFile(
       return
     }
 
-    for (let i = 0; i < node.namedChildCount; i++) {
-      const wc = cursor.gotoFirstChild()
-      if (wc) { visit(); cursor.gotoParent() }
+    visitChildren()
+  }
+
+  function visitChildren(): void {
+    if (cursor.gotoFirstChild()) {
+      do {
+        visit()
+      } while (cursor.gotoNextSibling())
+      cursor.gotoParent()
     }
   }
 

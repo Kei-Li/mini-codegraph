@@ -66,7 +66,19 @@ export const SUPPORTED_LANGUAGES: LanguageConfig[] = [
   },
   {
     name: 'typescript',
-    extensions: ['.ts', '.tsx'],
+    extensions: ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'],
+    grammarName: 'typescript',
+    grammarWasmFile: 'tree-sitter-typescript.wasm',
+  },
+  {
+    name: 'python',
+    extensions: ['.py', '.pyi'],
+    grammarName: 'python',
+    grammarWasmFile: 'tree-sitter-python.wasm',
+  },
+  {
+    name: 'vue',
+    extensions: ['.vue'],
     grammarName: 'typescript',
     grammarWasmFile: 'tree-sitter-typescript.wasm',
   },
