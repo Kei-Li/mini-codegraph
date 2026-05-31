@@ -11,7 +11,17 @@ export class GrammarLoader {
 
   async init(): Promise<void> {
     if (this.initialized) return
-    await Parser.init()
+    await Parser.init({
+      locateFile(path: string): string {
+        if (path === 'tree-sitter.wasm') {
+          const p = findWasmPath('tree-sitter.wasm')
+          if (p) return p
+        }
+        const p = findWasmPath(path)
+        if (p) return p
+        return path
+      },
+    })
     this.initialized = true
   }
 
@@ -23,26 +33,16 @@ export class GrammarLoader {
     }
 
     const parser = new Parser()
-    const wasmPath = findWasmPath(language)
+    const wasmPath = findWasmPath(`tree-sitter-${language}.wasm`)
 
     if (wasmPath && existsSync(wasmPath)) {
       const wasmBytes = readFileSync(wasmPath)
       const Lang = await Parser.Language.load(wasmBytes)
       parser.setLanguage(Lang)
     } else {
-      // Try loading from the tree-sitter wasm CDN / npm package
-      try {
-        const module = await importLanguageModule(language)
-        if (module) {
-          const Lang = await Parser.Language.load(module.bytes ?? module.default?.bytes)
-          parser.setLanguage(Lang)
-        }
-      } catch {
-        throw new Error(
-          `Grammar for "${language}" not found. ` +
-          `Place tree-sitter-${language}.wasm in the grammars/ directory.`
-        )
-      }
+      throw new Error(
+        `Grammar for "${language}" not found at grammars/tree-sitter-${language}.wasm`
+      )
     }
 
     this.parsers.set(language, parser)
@@ -50,21 +50,17 @@ export class GrammarLoader {
   }
 
   hasGrammar(language: string): boolean {
-    if (this.parsers.has(language)) return true
-
-    const wasmPath = findWasmPath(language)
+    const wasmPath = findWasmPath(`tree-sitter-${language}.wasm`)
     return (wasmPath && existsSync(wasmPath)) || false
   }
 }
 
-function findWasmPath(language: string): string | null {
+function findWasmPath(filename: string): string | null {
   const searchPaths = [
     join(__dirname, '..', '..', '..', 'grammars'),
     join(__dirname, '..', '..', 'grammars'),
     join(process.cwd(), 'grammars'),
   ]
-
-  const filename = `tree-sitter-${language}.wasm`
 
   for (const dir of searchPaths) {
     const fullPath = join(dir, filename)
@@ -72,14 +68,4 @@ function findWasmPath(language: string): string | null {
   }
 
   return null
-}
-
-async function importLanguageModule(language: string): Promise<any> {
-  try {
-    const url = `https://cdn.jsdelivr.net/npm/tree-sitter-${language}`
-    const response = await fetch(url)
-    if (!response.ok) return null
-  } catch {
-    return null
-  }
 }
