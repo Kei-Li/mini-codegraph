@@ -330,5 +330,85 @@ export function createTools(graph: GraphQueryManager): ToolDefinition[] {
         }
       },
     },
+    {
+      name: 'codegraph_architecture',
+      description: 'Show the microservice architecture: modules, their dependencies (FeignClient calls), and entry points (REST endpoints).',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+      },
+      handler: async () => {
+        const arch = graph.findMicroserviceArchitecture()
+        return {
+          modules: arch.modules,
+          dependencies: arch.dependencies.map(d => `${d.from} → ${d.to}`),
+          entryPoints: arch.entryPoints.map(ep => ({
+            module: ep.module,
+            endpoints: ep.endpoints,
+          })),
+        }
+      },
+    },
+    {
+      name: 'codegraph_feign',
+      description: 'List all FeignClient interfaces and their microservice targets.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          includeMethods: { type: 'boolean', description: 'Include Feign method details (default: true)' },
+        },
+      },
+      handler: async (args) => {
+        const { includeMethods = true } = args
+        const clients = graph.getFeignClients()
+        return {
+          clients: clients.map(c => ({
+            name: c.feignClient.name,
+            filePath: c.feignClient.filePath,
+            annotations: c.annotations.map(a => `${a.annotationName}(${a.value})`),
+            methods: includeMethods ? c.feignMethods.map(m => ({
+              name: m.name,
+              signature: m.signature,
+              line: m.startLine,
+            })) : undefined,
+          })),
+        }
+      },
+    },
+    {
+      name: 'codegraph_mybatis',
+      description: 'List MyBatis mapper XML bindings — maps Java interface methods to SQL statements.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+      },
+      handler: async () => {
+        const mappings = graph.getMyBatisMappings()
+        return {
+          mappings: mappings.map(m => ({
+            javaInterface: m.javaInterface,
+            method: m.methodName,
+            xmlFile: m.xmlPath,
+            sqlId: m.sqlId,
+          })),
+        }
+      },
+    },
+    {
+      name: 'codegraph_modules',
+      description: 'List all indexed modules (microservices) in the project.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+      },
+      handler: async () => {
+        const stats = graph.getStats()
+        const modules = []
+        if ('modules' in stats && typeof stats.modules === 'number') {
+          modules.push({ totalModules: stats.modules })
+        }
+        return { modules }
+      },
+    },
   ]
 }

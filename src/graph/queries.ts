@@ -1,73 +1,26 @@
 import type { QueryManager } from '../db/queries.js'
-import type { CodeGraphNode, SearchResult, FileRecord } from '../types.js'
+import type { CodeGraphNode } from '../types.js'
 import { GraphTraverser } from './traversal.js'
-import type { PathHop } from './traversal.js'
-import { readFileSync, statSync } from 'node:fs'
-import { join } from 'node:path'
-import { detectRoutes, type RouteInfo } from '../extraction/routes.js'
-import { isGeneratedFile, rankBoost } from '../generated.js'
 import { CodeAnalyzer } from '../analysis/index.js'
-import type {
-  ComplexityResult, CircularDepResult, HotPathResult,
-  DeadImportResult, EntryPointResult, SimilarCodeResult,
-} from '../analysis/index.js'
 
 export class GraphQueryManager {
   private queries: QueryManager
   private traverser: GraphTraverser
   private analyzer: CodeAnalyzer
   private projectRoot: string
-  private lastSyncTime = 0
   private pendingFiles: Set<string> = new Set()
+  private lastSyncTime = Date.now()
 
   constructor(queries: QueryManager, projectRoot: string) {
     this.queries = queries
+    this.projectRoot = projectRoot
     this.traverser = new GraphTraverser(queries)
     this.analyzer = new CodeAnalyzer(queries, projectRoot)
-    this.projectRoot = projectRoot
   }
 
-  search(query: string, limit = 20): SearchResult[] {
-    const stopWords = new Set(['the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been',
-      'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
-      'should', 'may', 'might', 'shall', 'can', 'need', 'dare', 'ought', 'used',
-      'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by', 'from', 'as', 'into',
-      'through', 'during', 'before', 'after', 'above', 'below', 'between', 'and',
-      'but', 'or', 'nor', 'not', 'so', 'yet', 'both', 'either', 'neither',
-      'this', 'that', 'these', 'those', 'it', 'its', 'get', 'set', 'find', 'put',
-      'all', 'each', 'every', 'some', 'any', 'no', 'none', 'if', 'then', 'else',
-      'when', 'where', 'how', 'what', 'which', 'who', 'whom', 'why'])
-
-    const queryTerms = query.toLowerCase().split(/[\s_]+/).filter(t =>
-      t.length > 1 && !stopWords.has(t)
-    )
-    const querySet = new Set(queryTerms)
-
-    function semanticScore(node: CodeGraphNode): number {
-      let matches = 0
-      const text = [
-        node.name, node.qualifiedName,
-        node.docstring, node.signature,
-      ].join(' ').toLowerCase()
-
-      for (const term of queryTerms) {
-        if (text.includes(term)) matches++
-      }
-      return queryTerms.length > 0 ? matches / queryTerms.length : 0
-    }
-
-    const results = this.queries.searchNodesWithRank(query, limit * 5)
-    const scored = results.map(({ node, rank }) => {
-      const snippets = this.getSnippets(node, 3)
-      const boost = rankBoost(node.filePath)
-      const semantic = semanticScore(node)
-      // BM25 rank is in negative-log form (lower = better), convert to 0-1 score
-      const bm25Score = Math.max(0, 1 - Math.abs(rank) / 100)
-      const score = bm25Score * 0.5 + semantic * 0.3 + (1 + boost) * 0.2
-      return { node, snippets, score }
-    })
-    scored.sort((a, b) => b.score - a.score)
-    return scored.slice(0, limit)
+  search(query: string, limit = 20): { node: CodeGraphNode; snippets: string[]; score: number }[] {
+    return this.queries.searchNodesWithRank(query, limit)
+      .map(r => ({ node: r.node, snippets: [r.node.signature, r.node.docstring].filter(Boolean), score: r.rank }))
   }
 
   getNode(id: string): CodeGraphNode | undefined {
@@ -82,14 +35,6 @@ export class GraphQueryManager {
     return this.queries.getCallees(nodeId)
   }
 
-  getChildren(nodeId: string): CodeGraphNode[] {
-    return this.queries.getChildren(nodeId)
-  }
-
-  getParent(nodeId: string): CodeGraphNode | undefined {
-    return this.queries.getParent(nodeId)
-  }
-
   getContext(nodeId: string): {
     node: CodeGraphNode | undefined
     parent: CodeGraphNode | undefined
@@ -97,59 +42,33 @@ export class GraphQueryManager {
     callers: CodeGraphNode[]
     callees: CodeGraphNode[]
     implementations: CodeGraphNode[]
+    annotations: { annotationName: string; value: string }[]
     crossServiceCallees: { node: CodeGraphNode; detail: string }[]
   } {
     const node = this.queries.getNode(nodeId)
-    return {
-      node,
-      parent: this.queries.getParent(nodeId),
-      children: this.queries.getChildren(nodeId),
-      callers: this.queries.getCallers(nodeId),
-      callees: this.queries.getCallees(nodeId),
-      implementations: node ? this.traverser.findImplementations(node) : [],
-      crossServiceCallees: node ? this.traverser.findCrossServiceCallees(node) : [],
-    }
-  }
+    if (!node) return { node: undefined, parent: undefined, children: [], callers: [], callees: [], implementations: [], annotations: [], crossServiceCallees: [] }
 
-  getFileNodes(filePath: string): CodeGraphNode[] {
-    return this.queries.getNodesByFile(filePath)
-  }
+    const parent = node.parentId ? this.queries.getNode(node.parentId) : undefined
+    const children = this.queries.getChildren(nodeId)
+    const callers = this.queries.getCallers(nodeId)
+    const callees = this.queries.getCallees(nodeId)
+    const annotations = this.queries.getAnnotationsByNode(nodeId)
 
-  findPath(from: string, to: string): PathHop[][] {
-    return this.traverser.findPath(from, to)
-  }
-
-  findDynamicDispatch(fromNode: CodeGraphNode): { node: CodeGraphNode; detail: string }[] {
-    const results: { node: CodeGraphNode; detail: string }[] = []
-
-    const implCallers = this.traverser.findInterfaceCallers(fromNode)
-    for (const ic of implCallers) {
-      results.push({ node: ic, detail: `implements ${fromNode.name}` })
+    let implementations: CodeGraphNode[] = []
+    if (['interface', 'type_alias'].includes(node.kind)) {
+      implementations = this.traverser.findImplementations(node)
     }
 
-    const ifaces = this.traverser.findInterfaceForImpl(fromNode)
-    for (const iface of ifaces) {
-      const ifaceCallers = this.getCallers(iface.id)
-      for (const caller of ifaceCallers) {
-        results.push({ node: caller, detail: `via ${iface.name}` })
-      }
+    let crossServiceCallees: { node: CodeGraphNode; detail: string }[] = []
+    if (node.kind === 'method' || node.kind === 'class') {
+      crossServiceCallees = this.traverser.findCrossServiceCallees(node)
     }
 
-    return results
-  }
-
-  findCallbackTargets(node: CodeGraphNode): { node: CodeGraphNode; detail: string }[] {
-    return this.traverser.findCallbackTargets(node)
-  }
-
-  findReactTargets(node: CodeGraphNode): { node: CodeGraphNode; detail: string }[] {
-    return this.traverser.findReactTargets(node)
+    return { node, parent, children, callers, callees, implementations, annotations, crossServiceCallees }
   }
 
   getImpact(nodeId: string, depth = 2): CodeGraphNode[] {
-    const impacted = this.traverser.findImpactedNodes(nodeId, depth)
-    const filtered = Array.from(impacted.values()).filter(n => !isGeneratedFile(n.filePath))
-    return filtered
+    return Array.from(this.traverser.findImpactedNodes(nodeId, depth).values())
   }
 
   findRelated(nodeIds: string[]): Map<string, { node: CodeGraphNode; relationships: string[] }> {
@@ -160,79 +79,135 @@ export class GraphQueryManager {
     return this.traverser.findDeadCode()
   }
 
-  findAffectedTestFiles(sourceFiles: string[]): {
-    testFile: string
-    matchedSymbols: string[]
-    confidence: number
-  }[] {
+  findAffectedTestFiles(sourceFiles: string[]): { testFile: string; matchedSymbols: string[]; confidence: number }[] {
     return this.traverser.findAffectedTestFiles(sourceFiles)
   }
 
-  getRoutes(): RouteInfo[] {
-    return detectRoutes(this.projectRoot, this.queries, this)
+  findPath(fromId: string, toId: string, maxDepth = 12): import('./traversal.js').PathHop[][] {
+    return this.traverser.findPath(fromId, toId, maxDepth)
   }
 
-  getStats(): { files: number; nodes: number; edges: number } {
+  findMicroserviceArchitecture(): {
+    modules: string[]
+    dependencies: { from: string; to: string }[]
+    entryPoints: { module: string; endpoints: string[] }[]
+  } {
+    return this.traverser.findMicroserviceArchitecture()
+  }
+
+  getFeignClients(): {
+    feignClient: CodeGraphNode
+    feignMethods: CodeGraphNode[]
+    annotations: { annotationName: string; value: string }[]
+  }[] {
+    const results: {
+      feignClient: CodeGraphNode
+      feignMethods: CodeGraphNode[]
+      annotations: { annotationName: string; value: string }[]
+    }[] = []
+
+    const feignAnnotated = this.queries.getNodesByAnnotation('FeignClient')
+    for (const node of feignAnnotated) {
+      const children = this.queries.getChildren(node.id)
+      const annotations = this.queries.getAnnotationsByNode(node.id)
+      results.push({ feignClient: node, feignMethods: children, annotations })
+    }
+
+    const clientInterfaces = this.queries.getNodesByKind('interface')
+      .filter(n => n.name.endsWith('Client'))
+
+    for (const iface of clientInterfaces) {
+      if (results.some(r => r.feignClient.id === iface.id)) continue
+      const annotations = this.queries.getAnnotationsByNode(iface.id)
+      if (annotations.some(a => a.annotationName === 'FeignClient') || annotations.length === 0) {
+        const children = this.queries.getChildren(iface.id)
+        results.push({ feignClient: iface, feignMethods: children, annotations })
+      }
+    }
+
+    return results
+  }
+
+  getMyBatisMappings(): {
+    javaInterface: string
+    methodName: string
+    xmlPath: string
+    sqlId: string
+  }[] {
+    const mappings: {
+      javaInterface: string
+      methodName: string
+      xmlPath: string
+      sqlId: string
+    }[] = []
+
+    const mapperEdges = this.queries.getAllNodes()
+    for (const node of mapperEdges) {
+      if (node.kind === 'method') {
+        const callees = this.queries.getCallees(node.id)
+        for (const callee of callees) {
+          if (callee.id.startsWith('mybatis:')) {
+            try {
+              const meta = JSON.parse(callee.signature || '{}')
+              mappings.push({
+                javaInterface: node.parentId ? this.queries.getNode(node.parentId)?.name || '' : '',
+                methodName: node.name,
+                xmlPath: callee.filePath,
+                sqlId: callee.name,
+              })
+            } catch {}
+          }
+        }
+      }
+    }
+
+    return mappings
+  }
+
+  getFileListing(pattern?: string): { path: string; language: string; nodeCount: number; moduleId?: string }[] {
+    const files = this.queries.getAllFiles()
+    let result = files.map(f => ({ path: f.path, language: f.language, nodeCount: f.nodeCount }))
+
+    if (pattern) {
+      const globPattern = pattern.replace(/\*/g, '.*').replace(/\?/g, '.')
+      const regex = new RegExp(globPattern, 'i')
+      result = result.filter(f => regex.test(f.path))
+    }
+
+    return result
+  }
+
+  getStats(): { files: number; nodes: number; edges: number; modules: number } {
     return this.queries.getStats()
   }
 
-  getFileListing(pattern?: string): { path: string; language: string; nodeCount: number }[] {
-    const files = this.queries.getAllFiles()
-    if (!pattern) {
-      return files.map(f => ({ path: f.path, language: f.language, nodeCount: f.nodeCount }))
-    }
-
-    const picomatch = require('picomatch')
-    const matcher = picomatch(pattern)
-    return files
-      .filter(f => matcher(f.path))
-      .map(f => ({ path: f.path, language: f.language, nodeCount: f.nodeCount }))
+  searchModule(query: string, moduleId: string, limit = 20): { node: CodeGraphNode; snippets: string[]; score: number }[] {
+    return this.queries.searchNodesByModule(query, moduleId, limit)
+      .map(n => ({ node: n, snippets: [n.signature, n.docstring].filter(Boolean), score: 0 }))
   }
 
-  getSnippets(node: CodeGraphNode, contextLines: number): string[] {
-    try {
-      const fullPath = join(this.projectRoot, node.filePath)
-      const content = readFileSync(fullPath, 'utf-8')
-      const lines = content.split('\n')
-
-      const start = Math.max(0, node.startLine - 1 - contextLines)
-      const end = Math.min(lines.length, node.endLine + contextLines)
-      return lines.slice(start, end)
-    } catch {
-      return []
-    }
-  }
-
-  getProjectRoot(): string {
-    return this.projectRoot
-  }
-
-  getCyclomaticComplexity(nodeId: string): ComplexityResult | null {
-    const node = this.queries.getNode(nodeId)
-    if (!node) return null
+  getCyclomaticComplexity(node: CodeGraphNode): any {
     return this.analyzer.computeCyclomaticComplexity(node)
   }
 
-  findCircularDeps(): CircularDepResult[] {
+  findCircularDeps(): any[] {
     return this.analyzer.findCircularDeps()
   }
 
-  findHotPaths(topN = 20): HotPathResult[] {
-    return this.analyzer.findHotPaths(topN)
-  }
-
-  findDeadImports(): DeadImportResult[] {
+  findDeadImports(): any[] {
     return this.analyzer.findDeadImports()
   }
 
-  findEntryPoints(): EntryPointResult[] {
+  findEntryPoints(): any[] {
     return this.analyzer.findEntryPoints()
   }
 
-  findSimilarCode(nodeId: string): SimilarCodeResult[] {
-    const node = this.queries.getNode(nodeId)
-    if (!node) return []
-    return this.analyzer.findSimilarCode(node)
+  getQueries(): QueryManager {
+    return this.queries
+  }
+
+  markFilePending(filePath: string): void {
+    this.pendingFiles.add(filePath)
   }
 
   markSyncComplete(): void {
@@ -240,28 +215,214 @@ export class GraphQueryManager {
     this.pendingFiles.clear()
   }
 
-  markFilePending(filePath: string): void {
-    this.pendingFiles.add(filePath)
-  }
-
   getStalenessWarning(): string | null {
-    if (this.pendingFiles.size === 0) return null
-
-    const files = Array.from(this.pendingFiles).slice(0, 5)
-    const more = this.pendingFiles.size > 5 ? ` and ${this.pendingFiles.size - 5} more` : ''
-    return `Index stale: ${files.join(', ')}${more} changed but not re-indexed`
+    if (this.pendingFiles.size > 0) {
+      return `${this.pendingFiles.size} files pending sync. Run sync to catch up.`
+    }
+    return null
   }
 
   checkStaleFiles(): void {
-    const allFiles = this.queries.getAllFiles()
-    for (const f of allFiles) {
+    if (this.pendingFiles.size > 0) {
+      console.error(`Warning: ${this.pendingFiles.size} files pending sync. Run 'mini-cg sync' to catch up.`)
+    }
+  }
+
+  getGatewayRoutes(): { id: string; uri: string; predicates: string[]; filters: string[] }[] {
+    const routes: { id: string; uri: string; predicates: string[]; filters: string[] }[] = []
+    for (const node of this.queries.getAllNodes()) {
+      if (node.id.startsWith('gateway:')) {
+        const anns = this.queries.getAnnotationsByNode(node.id)
+        const meta: any = {}
+        for (const a of anns) meta[a.annotationName] = a.value
+        routes.push({
+          id: node.name, uri: meta.uri ?? '',
+          predicates: meta.predicates ? JSON.parse(meta.predicates) : [],
+          filters: meta.filters ? JSON.parse(meta.filters) : [],
+        })
+      }
+    }
+    return routes
+  }
+
+  getMessageQueueBindings(): {
+    type: string; queueName: string; exchange: string; routingKey: string; moduleId: string
+  }[] {
+    const bindings: { type: string; queueName: string; exchange: string; routingKey: string; moduleId: string }[] = []
+    for (const node of this.queries.getAllNodes()) {
+      if (node.id.startsWith('mq:')) {
+        try {
+          const meta = JSON.parse(node.signature || '{}')
+          bindings.push({ ...meta, moduleId: node.moduleId ?? '' })
+        } catch {}
+      }
+    }
+    return bindings
+  }
+
+  getVueApiMappings(): { vueFile: string; apiPath: string; controllerMethod: string; controllerFile: string }[] {
+    const mappings: { vueFile: string; apiPath: string; controllerMethod: string; controllerFile: string }[] = []
+    const edges = this.queries.getAllEdges().filter(e => e.kind === 'api_mapping')
+    for (const e of edges) {
       try {
-        const fullPath = join(this.projectRoot, f.path)
-        const st = statSync(fullPath)
-        if (st.mtimeMs > f.modifiedAt) {
-          this.pendingFiles.add(f.path)
-        }
+        const meta = JSON.parse(e.metadata ?? '{}')
+        mappings.push({
+          vueFile: e.sourceId, apiPath: meta.path ?? '',
+          controllerMethod: e.targetId, controllerFile: meta.controllerFile ?? '',
+        })
       } catch {}
     }
+    return mappings
+  }
+
+  getSecurityAnnotations(): { filePath: string; annotation: string; value: string }[] {
+    const results: { filePath: string; annotation: string; value: string }[] = []
+    const edges = this.queries.getAllEdges().filter(e => e.kind === 'secured_by')
+    for (const e of edges) {
+      try {
+        const meta = JSON.parse(e.metadata ?? '{}')
+        results.push({ filePath: e.sourceId, annotation: meta.annotation ?? '', value: meta.value ?? '' })
+      } catch {}
+    }
+    return results
+  }
+
+  getJpaEntities(): { className: string; tableName: string; columns: number; relationships: number }[] {
+    const entities: { className: string; tableName: string; columns: number; relationships: number }[] = []
+    for (const node of this.queries.getAllNodes()) {
+      if (node.id.startsWith('jpa:')) {
+        try {
+          const meta = JSON.parse(node.signature || '{}')
+          entities.push({ className: node.name, tableName: meta.table ?? '', columns: meta.columns ?? 0, relationships: meta.relationships ?? 0 })
+        } catch {}
+      }
+    }
+    return entities
+  }
+
+  getBatchJobs(): { name: string; steps: string[]; chunkSize?: number }[] {
+    const jobs: { name: string; steps: string[]; chunkSize?: number }[] = []
+    for (const node of this.queries.getAllNodes()) {
+      if (node.id.startsWith('batch:')) {
+        try {
+          const meta = JSON.parse(node.signature || '{}')
+          jobs.push({ name: node.name, steps: meta.steps ?? [], chunkSize: meta.chunkSize })
+        } catch {}
+      }
+    }
+    return jobs
+  }
+
+  getResiliencePolicies(): { annotation: string; value: string; fallbackMethod: string; nodeId: string }[] {
+    const policies: { annotation: string; value: string; fallbackMethod: string; nodeId: string }[] = []
+    const edges = this.queries.getAllEdges().filter(e => e.kind === 'resilience_policy')
+    for (const e of edges) {
+      try {
+        const meta = JSON.parse(e.metadata ?? '{}')
+        policies.push({ annotation: meta.annotation ?? '', value: meta.value ?? '', fallbackMethod: meta.fallbackMethod ?? '', nodeId: e.sourceId })
+      } catch {}
+    }
+    return policies
+  }
+
+  getPiniaStores(): { name: string; stateKeys: string[]; actions: string[]; getters: string[]; usedIn: string[] }[] {
+    const stores: { name: string; stateKeys: string[]; actions: string[]; getters: string[]; usedIn: string[] }[] = []
+    for (const node of this.queries.getAllNodes()) {
+      if (node.id.startsWith('pinia:')) {
+        try {
+          const meta = JSON.parse(node.signature || '{}')
+          stores.push({ name: node.name, stateKeys: meta.stateKeys ?? [], actions: meta.actions ?? [], getters: meta.getters ?? [], usedIn: meta.usedIn ?? [] })
+        } catch {}
+      }
+    }
+    return stores
+  }
+
+  getI18nMessages(): { locale: string; key: string; value: string; usedBy: string[] }[] {
+    const msgs: { locale: string; key: string; value: string; usedBy: string[] }[] = []
+    const i18nEdges = this.queries.getAllEdges().filter(e => e.kind === 'i18n_usage')
+    const usageMap = new Map<string, string[]>()
+    for (const e of i18nEdges) {
+      const parts = e.targetId.replace('i18n:', '').split(':')
+      if (parts.length >= 2) {
+        const key = `${parts[0]}:${parts.slice(1).join(':')}`
+        if (!usageMap.has(key)) usageMap.set(key, [])
+        usageMap.get(key)!.push(e.sourceId)
+      }
+    }
+    for (const [key, usedBy] of usageMap) {
+      const colonIdx = key.indexOf(':')
+      const locale = key.substring(0, colonIdx)
+      const msgKey = key.substring(colonIdx + 1)
+      msgs.push({ locale, key: msgKey, value: '', usedBy })
+    }
+    return msgs
+  }
+
+  getDeployContainers(): { name: string; image: string; ports: string[]; dependsOn: string[] }[] {
+    const containers: { name: string; image: string; ports: string[]; dependsOn: string[] }[] = []
+    for (const node of this.queries.getAllNodes()) {
+      if (node.id.startsWith('docker:')) {
+        try {
+          const meta = JSON.parse(node.signature || '{}')
+          containers.push({ name: node.name, image: meta.image ?? '', ports: meta.ports ?? [], dependsOn: meta.dependsOn ?? [] })
+        } catch {}
+      }
+    }
+    return containers
+  }
+
+  getK8sResources(): { kind: string; name: string; image: string; replicas: number; ports: string[] }[] {
+    const resources: { kind: string; name: string; image: string; replicas: number; ports: string[] }[] = []
+    for (const node of this.queries.getAllNodes()) {
+      if (node.id.startsWith('k8s:')) {
+        try {
+          const meta = JSON.parse(node.signature || '{}')
+          resources.push({ kind: node.name.split(':')[0] ?? '', name: node.name, image: meta.image ?? '', replicas: meta.replicas ?? 1, ports: meta.ports ?? [] })
+        } catch {}
+      }
+    }
+    return resources
+  }
+
+  getOpenApiEndpoints(): { path: string; method: string; operationId: string; serviceName?: string }[] {
+    const endpoints: { path: string; method: string; operationId: string; serviceName?: string }[] = []
+    for (const node of this.queries.getAllNodes()) {
+      if (node.id.startsWith('openapi:')) {
+        const parts = node.id.replace('openapi:', '').split(':')
+        endpoints.push({
+          method: parts[0] ?? '', path: parts.slice(1).join(':'),
+          operationId: node.name, serviceName: node.moduleId,
+        })
+      }
+    }
+    return endpoints
+  }
+
+  getAllEdgesByKind(kind: string): { sourceId: string; targetId: string; metadata: string }[] {
+    return this.queries.getAllEdges().filter(e => e.kind === kind)
+      .map(e => ({ sourceId: e.sourceId, targetId: e.targetId, metadata: e.metadata ?? '' }))
+  }
+
+  async buildContext(task: string): Promise<import('../context/index.js').ContextSymbol[]> {
+    const { ContextBuilder } = await import('../context/index.js')
+    const builder = new ContextBuilder(this.queries, this, this.projectRoot)
+    const result = await builder.buildContext(task)
+    return result.symbols
+  }
+
+  async buildContextWithRoutes(task: string): Promise<{
+    task: string
+    symbols: import('../context/index.js').ContextSymbol[]
+    stats: { totalFiles: number; modules: number; nodes: number; edges: number }
+    routes?: { path: string; method: string; handler: string }[]
+  }> {
+    const { ContextBuilder } = await import('../context/index.js')
+    const builder = new ContextBuilder(this.queries, this, this.projectRoot)
+    return builder.buildContext(task)
+  }
+
+  getContextBuilder(): Promise<import('../context/index.js').ContextBuilder> {
+    return import('../context/index.js').then(m => new m.ContextBuilder(this.queries, this, this.projectRoot))
   }
 }

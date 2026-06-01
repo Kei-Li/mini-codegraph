@@ -1,5 +1,5 @@
 import type { QueryManager } from '../db/queries.js'
-import type { CodeGraphNode } from '../types.js'
+import type { CodeGraphNode, ModuleInfo } from '../types.js'
 import { isGeneratedFile, isSpringServiceImpl, findSpringImplName } from '../generated.js'
 
 export interface PathHop {
@@ -506,5 +506,135 @@ export class GraphTraverser {
     }
 
     return result.sort((a, b) => b.confidence - a.confidence)
+  }
+
+  findPathBetweenModules(fromSymbol: string, toSymbol: string, maxDepth = 8): PathHop[][] {
+    const paths: PathHop[][] = []
+    const fromResults = this.queries.searchNodes(fromSymbol, 5)
+    const toResults = this.queries.searchNodes(toSymbol, 5)
+
+    for (const from of fromResults) {
+      for (const to of toResults) {
+        const found = this.findPath(from.id, to.id, maxDepth)
+        paths.push(...found)
+      }
+    }
+
+    return paths
+  }
+
+  findCrossModuleReferences(nodeId: string): { node: CodeGraphNode; edgeKind: string; moduleId: string }[] {
+    const results: { node: CodeGraphNode; edgeKind: string; moduleId: string }[] = []
+    const node = this.queries.getNode(nodeId)
+    if (!node) return results
+
+    const callerModules = new Set<string>()
+    for (const caller of this.queries.getCallers(nodeId)) {
+      if (caller.moduleId && caller.moduleId !== node.moduleId) {
+        callerModules.add(caller.moduleId)
+        results.push({ node: caller, edgeKind: 'called_by', moduleId: caller.moduleId })
+      }
+    }
+
+    const calleeModules = new Set<string>()
+    for (const callee of this.queries.getCallees(nodeId)) {
+      if (callee.moduleId && callee.moduleId !== node.moduleId) {
+        calleeModules.add(callee.moduleId)
+        results.push({ node: callee, edgeKind: 'calls', moduleId: callee.moduleId })
+      }
+    }
+
+    if (node.kind === 'interface' || node.kind === 'class') {
+      const allNodes = this.queries.getAllNodes()
+      for (const n of allNodes) {
+        if (n.moduleId && n.moduleId !== node.moduleId) {
+          if (n.qualifiedName === node.qualifiedName || n.name === node.name) {
+            results.push({ node: n, edgeKind: 'same_symbol', moduleId: n.moduleId })
+          }
+        }
+      }
+    }
+
+    return results
+  }
+
+  findServiceDependencies(moduleId: string): { moduleId: string; dependencies: string[] } {
+    const deps = new Set<string>()
+    const moduleNodes = this.queries.getAllNodes().filter(n => n.moduleId === moduleId)
+
+    for (const node of moduleNodes) {
+      const callees = this.queries.getCallees(node.id)
+      for (const callee of callees) {
+        if (callee.moduleId && callee.moduleId !== moduleId) {
+          deps.add(callee.moduleId)
+        }
+      }
+
+      const annotations = this.queries.getAnnotationsByNode(node.id)
+      for (const ann of annotations) {
+        if (ann.annotationName === 'FeignClient' && ann.value) {
+          const nameMatch = ann.value.match(/name\s*=\s*["']([^"']+)["']/)
+          if (nameMatch) {
+            const serviceName = nameMatch[1]
+            const targetModules = this.queries.getAllNodes()
+              .filter(n => n.moduleId !== moduleId && n.kind === 'class' && n.name.toLowerCase().includes(serviceName.toLowerCase()))
+            for (const tm of targetModules) {
+              if (tm.moduleId) deps.add(tm.moduleId)
+            }
+          }
+        }
+      }
+
+      const feignCalls = this.queries.getCallees(node.id)
+        .filter(c => c.kind === 'method' && c.moduleId && c.moduleId !== moduleId)
+      for (const fc of feignCalls) {
+        if (fc.moduleId) deps.add(fc.moduleId)
+      }
+    }
+
+    return { moduleId, dependencies: [...deps] }
+  }
+
+  findMicroserviceArchitecture(): {
+    modules: string[]
+    dependencies: { from: string; to: string }[]
+    entryPoints: { module: string; endpoints: string[] }[]
+  } {
+    const allNodes = this.queries.getAllNodes()
+    const moduleSet = new Set<string>()
+    for (const n of allNodes) {
+      if (n.moduleId) moduleSet.add(n.moduleId)
+    }
+    const modules = [...moduleSet].filter(m => m !== 'default')
+
+    const dependencyPairs: { from: string; to: string }[] = []
+    for (const mod of modules) {
+      const { dependencies } = this.findServiceDependencies(mod)
+      for (const dep of dependencies) {
+        if (!dependencyPairs.some(d => d.from === mod && d.to === dep)) {
+          dependencyPairs.push({ from: mod, to: dep })
+        }
+      }
+    }
+
+    const entryPoints: { module: string; endpoints: string[] }[] = []
+    for (const mod of modules) {
+      const controllers = this.queries.getAllNodes()
+        .filter(n => n.moduleId === mod)
+      const endpoints: string[] = []
+      for (const ctrl of controllers) {
+        const annotations = this.queries.getAnnotationsByNode(ctrl.id)
+        for (const ann of annotations) {
+          if (['GetMapping', 'PostMapping', 'PutMapping', 'DeleteMapping', 'PatchMapping', 'RequestMapping'].includes(ann.annotationName)) {
+            endpoints.push(`${ann.annotationName} ${ann.value} in ${ctrl.filePath}`)
+          }
+        }
+      }
+      if (endpoints.length > 0) {
+        entryPoints.push({ module: mod, endpoints })
+      }
+    }
+
+    return { modules, dependencies: dependencyPairs, entryPoints }
   }
 }

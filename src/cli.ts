@@ -2,7 +2,7 @@
 
 import { Command } from 'commander'
 import { resolve, join } from 'node:path'
-import { existsSync, writeFileSync, readFileSync } from 'node:fs'
+import { existsSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs'
 import { execSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { MiniCodeGraph } from './index.js'
@@ -10,22 +10,57 @@ import { StdioTransport } from './mcp/stdio-transport.js'
 import { MCPServer } from './mcp/server.js'
 import { DaemonServer } from './daemon/server.js'
 import { getDaemonInfo, startDaemon, connectToDaemon } from './daemon/client.js'
+import { findMulitModuleProjects, detectSpring } from './resolution/frameworks/java.js'
+import { detectVue } from './resolution/frameworks/vue.js'
 
 const program = new Command()
 
 program
   .name('mini-cg')
   .description('mini-codegraph — lightweight code knowledge graph')
-  .version('0.1.0')
+  .version('0.2.0')
 
 program
   .command('init')
   .description('Initialize a codegraph database for a project')
   .argument('[path]', 'Project root path', process.cwd())
   .option('-i, --index', 'Also index after initialization')
-  .action(async (path: string, options: { index?: boolean }) => {
-    const cg = MiniCodeGraph.init(path)
-    console.error(`Initialized codegraph for ${path}`)
+  .option('--multi-module', 'Discover and initialize sub-modules (Maven/Gradle multi-module)')
+  .action(async (path: string, options: { index?: boolean; multiModule?: boolean }) => {
+    const resolvedPath = resolve(path)
+
+    if (options.multiModule) {
+      const { cg, modules } = MiniCodeGraph.initMultiModule(resolvedPath)
+      if (modules.length === 0) {
+        console.error('No sub-modules found in', resolvedPath)
+        process.exit(1)
+      }
+
+      console.error(`Initialized multi-module codegraph for ${resolvedPath}`)
+      console.error(`Found ${modules.length} sub-modules:`)
+      for (const mod of modules) {
+        console.error(`  [${mod.language}] ${mod.name} (${mod.buildSystem}) — ${mod.rootPath}`)
+      }
+
+      if (options.index) {
+        console.error('\nIndexing all modules...')
+        const result = await cg.indexMultiModule()
+        const stats = cg.getGraph().getStats()
+        console.error(`\nIndexed ${stats.modules} modules, ${stats.files} files, ${stats.nodes} nodes, ${stats.edges} edges`)
+        if (result.errors.length > 0) {
+          console.error(`Errors: ${result.errors.length}`)
+          for (const err of result.errors.slice(0, 5)) {
+            console.error(`  ${err}`)
+          }
+        }
+      }
+
+      cg.close()
+      return
+    }
+
+    const cg = MiniCodeGraph.init(resolvedPath)
+    console.error(`Initialized codegraph for ${resolvedPath}`)
 
     if (options.index) {
       console.error('Indexing...')
@@ -42,8 +77,45 @@ program
   .description('Index all supported files in the project')
   .argument('[path]', 'Project root path', process.cwd())
   .option('-f, --force', 'Force re-index all files')
-  .action(async (path: string, options: { force?: boolean }) => {
-    const cg = MiniCodeGraph.init(path)
+  .option('--multi-module', 'Index as multi-module (Maven/Gradle multi-module parent)')
+  .action(async (path: string, options: { force?: boolean; multiModule?: boolean }) => {
+    const resolvedPath = resolve(path)
+
+    if (options.multiModule) {
+      const cg = MiniCodeGraph.open(resolvedPath)
+      if (!cg) {
+        const { cg: newCg, modules } = MiniCodeGraph.initMultiModule(resolvedPath)
+        if (modules.length === 0) {
+          console.error('No sub-modules found.')
+          process.exit(1)
+        }
+        const result = await newCg.indexMultiModule()
+        const stats = newCg.getGraph().getStats()
+        console.log(JSON.stringify({
+          modules: stats.modules,
+          files_indexed: stats.files,
+          nodes: stats.nodes,
+          edges: stats.edges,
+          errors: result.errors.length,
+        }, null, 2))
+        newCg.close()
+        return
+      }
+
+      const result = await cg.indexMultiModule()
+      const stats = cg.getGraph().getStats()
+      console.log(JSON.stringify({
+        modules: stats.modules,
+        files_indexed: stats.files,
+        nodes: stats.nodes,
+        edges: stats.edges,
+        errors: result.errors.length,
+      }, null, 2))
+      cg.close()
+      return
+    }
+
+    const cg = MiniCodeGraph.init(resolvedPath)
     const result = await cg.index()
 
     const stats = cg.getGraph().getStats()
@@ -69,7 +141,8 @@ program
   .description('Incremental update — index only new/changed files')
   .argument('[path]', 'Project root path', process.cwd())
   .action(async (path: string) => {
-    const cg = MiniCodeGraph.open(path)
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
     if (!cg) {
       console.error('No index found. Run init + index first.')
       process.exit(1)
@@ -86,6 +159,23 @@ program
   })
 
 program
+  .command('modules')
+  .description('List indexed modules')
+  .argument('[path]', 'Project root path', process.cwd())
+  .action((path: string) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) {
+      console.error('No index found.')
+      process.exit(1)
+    }
+
+    const modules = cg.getModules()
+    console.log(JSON.stringify({ modules, count: modules.length }, null, 2))
+    cg.close()
+  })
+
+program
   .command('serve')
   .description('Start the MCP server over stdio')
   .argument('[path]', 'Project root path', process.cwd())
@@ -94,7 +184,6 @@ program
     const resolvedPath = resolve(path)
 
     if (options.daemon) {
-      // Start as daemon process — run TCP server
       const cg = MiniCodeGraph.open(resolvedPath)
       if (!cg) {
         console.error(`No index found for ${resolvedPath}. Run 'mini-cg init' and 'mini-cg index' first.`)
@@ -108,7 +197,6 @@ program
       const daemon = new DaemonServer(resolvedPath, graph)
       try {
         await daemon.start()
-        // Keep alive — don't exit
         process.stdin.resume()
       } catch (e) {
         console.error(`Failed to start daemon: ${e}`)
@@ -117,14 +205,12 @@ program
       return
     }
 
-    // Try connecting to existing daemon first
     const info = getDaemonInfo(resolvedPath)
     if (info?.alive) {
       try {
         const socket = await connectToDaemon(info.port)
         console.error(`Connected to existing daemon (pid ${info.pid})`)
 
-        // Bridge: stdin → socket, socket → stdout
         let buffer = ''
         process.stdin.on('data', (chunk: Buffer) => {
           const data = chunk.toString()
@@ -151,7 +237,6 @@ program
       }
     }
 
-    // Start a new daemon in background and connect
     try {
       console.error('Starting daemon...')
       const port = await startDaemon(resolvedPath)
@@ -186,6 +271,7 @@ program
   .argument('<query>', 'Symbol name or search query')
   .option('-k, --kind <kind>', 'Filter by node kind (function, class, method, etc.)')
   .option('-l, --limit <number>', 'Maximum results', '20')
+  .option('-m, --module <moduleId>', 'Filter by module')
   .argument('[path]', 'Project root path', process.cwd())
   .action(async (query: string, path: string, options: any) => {
     const resolvedPath = resolve(path)
@@ -214,10 +300,13 @@ program
     }
 
     const stats = cg.getGraph().getStats()
+    const modules = cg.getModules()
     const routes = cg.getRoutes()
+    const frameworks = cg.getFrameworks()
     console.log(JSON.stringify({
       ...stats,
-      frameworks: [...new Set(routes.map(r => r.framework))],
+      modules: modules.map(m => ({ name: m.name, language: m.language, buildSystem: m.buildSystem })),
+      frameworks: [...new Set([...frameworks, ...routes.map(r => r.framework)])],
       routeCount: routes.length,
     }, null, 2))
     cg.close()
@@ -225,11 +314,12 @@ program
 
 program
   .command('context')
-  .description('Build context for a task description')
+  .description('Build context for a task description (15-step pipeline)')
   .argument('<task>', 'Task description')
   .argument('[path]', 'Project root path', process.cwd())
   .option('--max-nodes <number>', 'Maximum symbols', '10')
   .option('--no-routes', 'Skip route detection')
+  .option('--format <format>', 'Output format: json or markdown', 'json')
   .action(async (task: string, path: string, options: any) => {
     const resolvedPath = resolve(path)
     const cg = MiniCodeGraph.open(resolvedPath)
@@ -239,44 +329,20 @@ program
     }
 
     const graph = cg.getGraph()
-    const searchTerms = task.split(/\s+/).filter((t: string) => t.length > 2)
-    const allResults: any[] = []
-    const maxNodes = parseInt(options.maxNodes, 10)
+    const result = await graph.buildContextWithRoutes(task)
 
-    for (const term of searchTerms.slice(0, 5)) {
-      const results = graph.search(term, maxNodes)
-      for (const r of results) {
-        if (allResults.length >= maxNodes) break
-        const existingIds = new Set(allResults.map((x: any) => x.id))
-        if (!existingIds.has(r.node.id)) {
-          const ctx = graph.getContext(r.node.id)
-          allResults.push({
-            id: r.node.id,
-            name: r.node.name,
-            kind: r.node.kind,
-            qualifiedName: r.node.qualifiedName,
-            filePath: r.node.filePath,
-            lines: `${r.node.startLine}-${r.node.endLine}`,
-            signature: r.node.signature,
-            docstring: r.node.docstring,
-            callers: ctx.callers.map(c => ({ name: c.name, filePath: c.filePath })),
-            callees: ctx.callees.map(c => ({ name: c.name, filePath: c.filePath })),
-            implementations: ctx.implementations.map(i => ({ name: i.name, filePath: i.filePath })),
-            code: r.snippets.join('\n'),
-          })
-        }
+    if (options.format === 'markdown') {
+      const { ContextBuilder } = await import('./context/index.js')
+      const builder = new ContextBuilder(graph.getQueries(), graph, resolvedPath)
+      const markdown = builder.formatAsMarkdown(result.task, result.symbols, result.stats, result.routes)
+      console.log(markdown)
+    } else {
+      if (options.routes === false) {
+        delete result.routes
       }
-      if (allResults.length >= maxNodes) break
+      console.log(JSON.stringify(result, null, 2))
     }
 
-    const result: any = { task, symbols: allResults }
-
-    if (options.routes !== false) {
-      const routes = cg.getRoutes()
-      if (routes.length > 0) result.routes = routes
-    }
-
-    console.log(JSON.stringify(result, null, 2))
     cg.close()
   })
 
@@ -359,7 +425,7 @@ program
     console.log(JSON.stringify({
       target: results[0].node,
       impacted: impacted.map(n => ({
-        name: n.name, kind: n.kind, filePath: n.filePath, lines: `${n.startLine}-${n.endLine}`,
+        name: n.name, kind: n.kind, filePath: n.filePath, lines: `${n.startLine}-${n.endLine}`, moduleId: n.moduleId,
       })),
     }, null, 2))
     cg.close()
@@ -455,6 +521,7 @@ program
         name: info.node.name,
         kind: info.node.kind,
         lines: `${info.node.startLine}-${info.node.endLine}`,
+        moduleId: info.node.moduleId,
         relationships: info.relationships,
       })
     }
@@ -484,6 +551,240 @@ program
   })
 
 program
+  .command('feign')
+  .description('Find FeignClient cross-service call mappings')
+  .argument('[path]', 'Project root path', process.cwd())
+  .action((path: string) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) {
+      console.error('No index found.')
+      process.exit(1)
+    }
+
+    try {
+      const feignClients = cg.getGraph().getFeignClients()
+      console.log(JSON.stringify({ feignClients, count: feignClients.length }, null, 2))
+    } catch {
+      console.log(JSON.stringify({ feignClients: [], count: 0 }))
+    }
+    cg.close()
+  })
+
+program
+  .command('mybatis')
+  .description('Show MyBatis mapper XML bindings')
+  .argument('[path]', 'Project root path', process.cwd())
+  .action((path: string) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) {
+      console.error('No index found.')
+      process.exit(1)
+    }
+
+    try {
+      const bindings = cg.getGraph().getMyBatisMappings()
+      console.log(JSON.stringify({ mybatisBindings: bindings, count: bindings.length }, null, 2))
+    } catch {
+      console.log(JSON.stringify({ mybatisBindings: [], count: 0 }))
+    }
+    cg.close()
+  })
+
+program
+  .command('gateway')
+  .description('Show API Gateway routes')
+  .argument('[path]', 'Project root path', process.cwd())
+  .action((path: string) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    const routes = cg.getGraph().getGatewayRoutes()
+    console.log(JSON.stringify({ gatewayRoutes: routes, count: routes.length }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('mq')
+  .description('Show message queue bindings')
+  .argument('[path]', 'Project root path', process.cwd())
+  .action((path: string) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    const bindings = cg.getGraph().getMessageQueueBindings()
+    console.log(JSON.stringify({ messageQueueBindings: bindings, count: bindings.length }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('api-map')
+  .description('Show Vue frontend to API controller mappings')
+  .argument('[path]', 'Project root path', process.cwd())
+  .action((path: string) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    const mappings = cg.getGraph().getVueApiMappings()
+    console.log(JSON.stringify({ apiMappings: mappings, count: mappings.length }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('security')
+  .description('Show security annotations')
+  .argument('[path]', 'Project root path', process.cwd())
+  .action((path: string) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    const annotations = cg.getGraph().getSecurityAnnotations()
+    console.log(JSON.stringify({ securityAnnotations: annotations, count: annotations.length }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('jpa')
+  .description('Show JPA entities')
+  .argument('[path]', 'Project root path', process.cwd())
+  .action((path: string) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    const entities = cg.getGraph().getJpaEntities()
+    console.log(JSON.stringify({ jpaEntities: entities, count: entities.length }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('batch')
+  .description('Show Spring Batch jobs')
+  .argument('[path]', 'Project root path', process.cwd())
+  .action((path: string) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    const jobs = cg.getGraph().getBatchJobs()
+    console.log(JSON.stringify({ batchJobs: jobs, count: jobs.length }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('resilience')
+  .description('Show resilience policies (CircuitBreaker, Retry, etc.)')
+  .argument('[path]', 'Project root path', process.cwd())
+  .action((path: string) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    const policies = cg.getGraph().getResiliencePolicies()
+    console.log(JSON.stringify({ resiliencePolicies: policies, count: policies.length }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('pinia')
+  .description('Show Pinia stores')
+  .argument('[path]', 'Project root path', process.cwd())
+  .action((path: string) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    const stores = cg.getGraph().getPiniaStores()
+    console.log(JSON.stringify({ piniaStores: stores, count: stores.length }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('i18n')
+  .description('Show i18n message usage')
+  .argument('[path]', 'Project root path', process.cwd())
+  .action((path: string) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    const messages = cg.getGraph().getI18nMessages()
+    console.log(JSON.stringify({ i18nMessages: messages, count: messages.length }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('docker')
+  .description('Show Docker deployment containers')
+  .argument('[path]', 'Project root path', process.cwd())
+  .action((path: string) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    const containers = cg.getGraph().getDeployContainers()
+    console.log(JSON.stringify({ dockerContainers: containers, count: containers.length }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('k8s')
+  .description('Show K8s resources')
+  .argument('[path]', 'Project root path', process.cwd())
+  .action((path: string) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    const resources = cg.getGraph().getK8sResources()
+    console.log(JSON.stringify({ k8sResources: resources, count: resources.length }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('openapi')
+  .description('Show OpenAPI contracts')
+  .argument('[path]', 'Project root path', process.cwd())
+  .action((path: string) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    const endpoints = cg.getGraph().getOpenApiEndpoints()
+    console.log(JSON.stringify({ openApiEndpoints: endpoints, count: endpoints.length }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('diagram')
+  .description('Generate Mermaid architecture diagrams')
+  .argument('[path]', 'Project root path', process.cwd())
+  .option('-t, --type <type>', 'Diagram type: architecture, dependencies, sequence, all', 'all')
+  .action(async (path: string, options: { type: string }) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+
+    const { generateArchitectureDiagram, generateServiceDependencyDiagram, generateSequenceDiagram, getAllMermaidDiagrams } = await import('./visualization/mermaid.js')
+    const queries = cg.getGraph().getQueries()
+
+    switch (options.type) {
+      case 'architecture':
+        console.log(generateArchitectureDiagram(queries))
+        break
+      case 'dependencies':
+        console.log(generateServiceDependencyDiagram(queries))
+        break
+      case 'sequence':
+        console.log(generateSequenceDiagram(queries, ''))
+        break
+      default: {
+        const diagrams = getAllMermaidDiagrams(queries)
+        console.log('--- Architecture ---')
+        console.log(diagrams.architecture)
+        console.log('\n--- Dependencies ---')
+        console.log(diagrams.dependencies)
+        console.log('\n--- Sequence ---')
+        console.log(diagrams.sequence)
+      }
+    }
+    cg.close()
+  })
+
+program
   .command('install')
   .description('Install and configure mini-codegraph for AI agents')
   .option('--target <agents>', 'Comma-separated agent targets (opencode, claude, cursor, codex)')
@@ -494,7 +795,6 @@ program
     const location = options.location || 'global'
     const yes = options.yes || false
 
-    // Phase 1: Ensure CLI is on PATH
     const cliPath = ensureCliOnPath()
     if (cliPath) {
       console.error(`CLI available at: ${cliPath}`)
@@ -532,7 +832,6 @@ program
           }
 
           if (!existsSync(configDir)) {
-            const { mkdirSync } = await import('node:fs')
             mkdirSync(configDir, { recursive: true })
           }
 

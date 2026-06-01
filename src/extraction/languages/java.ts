@@ -16,6 +16,7 @@ export interface NodeInfo {
   filePath: string
   language: string
   id: string
+  annotations?: { name: string; value: string }[]
 }
 
 export interface EdgeInfo {
@@ -63,6 +64,7 @@ export function parseJavaFile(
 
       const visibility = findVisibility(lines, range.startLine)
       const docstring = extractJavaDoc(lines, range.startLine)
+      const annotations = extractAnnotationsFor(lines, range.startLine)
 
       let qualifiedName = name
       if (parentId) {
@@ -87,6 +89,7 @@ export function parseJavaFile(
         signature: name,
         filePath,
         language,
+        annotations,
       })
 
       if (parentId) {
@@ -106,6 +109,7 @@ export function parseJavaFile(
       const nodeId = `${filePath}:${name}:${range.startLine}`
       const visibility = findVisibility(lines, range.startLine)
       const docstring = extractJavaDoc(lines, range.startLine)
+      const annotations = extractAnnotationsFor(lines, range.startLine)
 
       const params = node.namedChildren
         .filter((c: any) => c.type === 'formal_parameters')
@@ -130,6 +134,7 @@ export function parseJavaFile(
         signature,
         filePath,
         language,
+        annotations,
       })
 
       if (parentId) {
@@ -146,6 +151,7 @@ export function parseJavaFile(
       const name = declarator?.namedChildren.find((c: any) => c.type === 'identifier')?.text ?? 'unknown'
       const nodeId = `${filePath}:${name}:${range.startLine}`
       const visibility = findVisibility(lines, range.startLine)
+      const annotations = extractAnnotationsFor(lines, range.startLine)
 
       nodes.push({
         id: nodeId,
@@ -163,6 +169,7 @@ export function parseJavaFile(
         signature: `${visibility} ${name}`.trim(),
         filePath,
         language,
+        annotations,
       })
 
       if (parentId) {
@@ -176,7 +183,7 @@ export function parseJavaFile(
       if (!nameNode) return
       const callName = nameNode.text
 
-      const callerId = findEnclosingMethod(node, filePath, nodes)
+      const callerId = findEnclosingMethod(node, filePath)
       if (callerId) {
         edges.push({
           source: callerId,
@@ -187,13 +194,34 @@ export function parseJavaFile(
           metadata: JSON.stringify({ name: callName, type: 'method_invocation' }),
         })
       }
+
+      const objectNode = node.namedChildren.find((c: any) =>
+        c.type === 'object_identifier' || c.type === 'scoped_identifier' || c.type === 'member_expression'
+      )
+      if (objectNode) {
+        const qualifier = objectNode.text
+        if (qualifier && qualifier !== callName) {
+          const fullCall = `${qualifier}.${callName}`
+          const callerId2 = findEnclosingMethod(node, filePath)
+          if (callerId2) {
+            edges.push({
+              source: callerId2,
+              target: `${filePath}:${fullCall}`,
+              kind: 'calls',
+              line: range.startLine,
+              col: range.startColumn,
+              metadata: JSON.stringify({ name: fullCall, type: 'qualified_invocation' }),
+            })
+          }
+        }
+      }
       return
     }
 
     if (nodeType === 'object_creation_expression') {
       const typeNode = node.namedChildren.find((c: any) => c.type === 'type' || c.type === 'type_identifier')
       if (!typeNode) return
-      const callerId = findEnclosingMethod(node, filePath, nodes)
+      const callerId = findEnclosingMethod(node, filePath)
       if (callerId) {
         edges.push({
           source: callerId,
@@ -274,6 +302,23 @@ function extractJavaDoc(lines: string[], lineNum: number): string {
   return docLines.join(' ')
 }
 
+function extractAnnotationsFor(lines: string[], lineNum: number): { name: string; value: string }[] {
+  const annotations: { name: string; value: string }[] = []
+  for (let i = lineNum - 2; i >= 0; i--) {
+    const line = lines[i]?.trim() ?? ''
+    if (!line.startsWith('@')) break
+
+    const annMatch = line.match(/@(\w+)\s*(?:\(([^)]*)\))?/)
+    if (annMatch) {
+      annotations.push({
+        name: annMatch[1],
+        value: annMatch[2]?.trim() ?? '',
+      })
+    }
+  }
+  return annotations
+}
+
 function extractPackage(lines: string[], className: string): string {
   for (const line of lines) {
     if (line.trim().startsWith('package ')) {
@@ -294,11 +339,7 @@ function getCurrentClassName(classStack: string[], _nodes: NodeInfo[]): string {
   return getNodeName(classStack[classStack.length - 1])
 }
 
-function findEnclosingMethod(
-  node: any,
-  filePath: string,
-  _nodes: NodeInfo[]
-): string | null {
+function findEnclosingMethod(node: any, filePath: string): string | null {
   let p = node.parent
   while (p) {
     if (p.type === 'method_declaration' || p.type === 'constructor_declaration') {
