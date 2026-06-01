@@ -1,8 +1,8 @@
 import type { QueryManager } from '../db/queries.js'
-import type { CodeGraphNode } from '../types.js'
+import type { MiniCodeGraphNode } from '../types.js'
 
 export interface MatchResult {
-  node: CodeGraphNode
+  node: MiniCodeGraphNode
   confidence: number
   strategy: string
 }
@@ -81,11 +81,11 @@ export function matchReference(
 
 export function findImplementations(
   queries: QueryManager,
-  interfaceNode: CodeGraphNode
-): CodeGraphNode[] {
+  interfaceNode: MiniCodeGraphNode
+): MiniCodeGraphNode[] {
   if (!['interface', 'type_alias'].includes(interfaceNode.kind)) return []
 
-  const results: CodeGraphNode[] = []
+  const results: MiniCodeGraphNode[] = []
   const nodeName = interfaceNode.name
   const nodeQName = interfaceNode.qualifiedName
   const simpleName = nodeQName.split('.').pop() ?? nodeName
@@ -126,7 +126,7 @@ export function resolveByNameAcrossModules(
   queries: QueryManager,
   name: string,
   excludeModuleId?: string
-): CodeGraphNode[] {
+): MiniCodeGraphNode[] {
   const results = queries.searchNodes(name, 100)
   if (excludeModuleId) {
     return results.filter(n => n.moduleId && n.moduleId !== excludeModuleId)

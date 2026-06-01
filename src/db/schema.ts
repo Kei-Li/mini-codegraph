@@ -248,7 +248,7 @@ export const INSERT_MODULE = `
 export const GET_ALL_MODULES = `SELECT * FROM modules`
 
 export const INSERT_ANNOTATION = `
-  INSERT OR IGNORE INTO annotations (id, node_id, annotation_name, value, line, module_id)
+  INSERT OR REPLACE INTO annotations (id, node_id, annotation_name, value, line, module_id)
   VALUES (?, ?, ?, ?, ?, ?)
 `
 export const GET_ANNOTATIONS_BY_NODE = `SELECT * FROM annotations WHERE node_id = ?`

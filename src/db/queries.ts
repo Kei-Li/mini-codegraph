@@ -1,8 +1,8 @@
 import type { DatabaseConnection } from './connection.js'
-import type { CodeGraphNode, FileRecord, ModuleInfo, UnresolvedReference } from '../types.js'
+import type { MiniCodeGraphNode, FileRecord, ModuleInfo, UnresolvedReference } from '../types.js'
 import * as Q from './schema.js'
 
-function mapRowToNode(row: Record<string, any>): CodeGraphNode {
+function mapRowToNode(row: Record<string, any>): MiniCodeGraphNode {
   return {
     id: row.id,
     kind: row.kind,
@@ -50,61 +50,71 @@ function mapRowToModule(row: Record<string, any>): ModuleInfo {
 export class QueryManager {
   constructor(private db: DatabaseConnection) {}
 
-  searchNodes(query: string, limit = 20): CodeGraphNode[] {
+  private sanitizeFts5(query: string): string {
+    return query.replace(/[^\w\s-]/g, '').trim()
+  }
+
+  searchNodes(query: string, limit = 20): MiniCodeGraphNode[] {
+    const safe = this.sanitizeFts5(query)
+    if (!safe) return []
     const stmt = this.db.prepare(Q.SEARCH_NODES)
-    const rows = stmt.all(query, limit) as Record<string, any>[]
+    const rows = stmt.all(safe, limit) as Record<string, any>[]
     return rows.map(mapRowToNode)
   }
 
-  searchNodesWithRank(query: string, limit = 20): { node: CodeGraphNode; rank: number }[] {
+  searchNodesWithRank(query: string, limit = 20): { node: MiniCodeGraphNode; rank: number }[] {
+    const safe = this.sanitizeFts5(query)
+    if (!safe) return []
     const stmt = this.db.prepare(Q.SEARCH_NODES)
-    const rows = stmt.all(query, limit) as Record<string, any>[]
+    const rows = stmt.all(safe, limit) as Record<string, any>[]
     return rows.map(r => ({ node: mapRowToNode(r), rank: r.rank as number }))
   }
 
-  searchNodesByModule(query: string, moduleId: string, limit = 20): CodeGraphNode[] {
+  searchNodesByModule(query: string, moduleId: string, limit = 20): MiniCodeGraphNode[] {
+    const safe = this.sanitizeFts5(query)
+    if (!safe) return []
     const stmt = this.db.prepare(Q.SEARCH_NODES_BY_MODULE)
-    const rows = stmt.all(query, moduleId, limit) as Record<string, any>[]
+    const rows = stmt.all(safe, moduleId, limit) as Record<string, any>[]
     return rows.map(mapRowToNode)
   }
 
-  getNode(id: string): CodeGraphNode | undefined {
+  getNode(id: string): MiniCodeGraphNode | undefined {
     const stmt = this.db.prepare(Q.GET_NODE_BY_ID)
     const row = stmt.get(id) as Record<string, any> | undefined
     return row ? mapRowToNode(row) : undefined
   }
 
-  getNodesByFile(filePath: string): CodeGraphNode[] {
+  getNodesByFile(filePath: string): MiniCodeGraphNode[] {
     const stmt = this.db.prepare(Q.GET_NODES_BY_FILE)
     const rows = stmt.all(filePath) as Record<string, any>[]
     return rows.map(mapRowToNode)
   }
 
-  getCallers(nodeId: string): CodeGraphNode[] {
+  getCallers(nodeId: string): MiniCodeGraphNode[] {
     const stmt = this.db.prepare(Q.GET_CALLERS)
     const rows = stmt.all(nodeId) as Record<string, any>[]
     return rows.map(mapRowToNode)
   }
 
-  getCallees(nodeId: string): CodeGraphNode[] {
+  getCallees(nodeId: string): MiniCodeGraphNode[] {
     const stmt = this.db.prepare(Q.GET_CALLEES)
     const rows = stmt.all(nodeId) as Record<string, any>[]
     return rows.map(mapRowToNode)
   }
 
-  getImports(nodeId: string): CodeGraphNode[] {
+  getImports(nodeId: string): MiniCodeGraphNode[] {
     const stmt = this.db.prepare(Q.GET_IMPORTS)
     const rows = stmt.all(nodeId) as Record<string, any>[]
     return rows.map(mapRowToNode)
   }
 
-  getChildren(parentId: string): CodeGraphNode[] {
+  getChildren(parentId: string): MiniCodeGraphNode[] {
     const stmt = this.db.prepare(Q.GET_CHILDREN)
     const rows = stmt.all(parentId) as Record<string, any>[]
     return rows.map(mapRowToNode)
   }
 
-  getParent(nodeId: string): CodeGraphNode | undefined {
+  getParent(nodeId: string): MiniCodeGraphNode | undefined {
     const node = this.getNode(nodeId)
     if (!node?.parentId) return undefined
     return this.getNode(node.parentId)
@@ -128,19 +138,19 @@ export class QueryManager {
     return rows.map(mapRowToFile)
   }
 
-  getAllNodes(): CodeGraphNode[] {
+  getAllNodes(): MiniCodeGraphNode[] {
     const stmt = this.db.prepare(Q.GET_ALL_NODES)
     const rows = stmt.all() as Record<string, any>[]
     return rows.map(mapRowToNode)
   }
 
-  getNodesByKind(kind: string): CodeGraphNode[] {
+  getNodesByKind(kind: string): MiniCodeGraphNode[] {
     const stmt = this.db.prepare(Q.GET_NODES_BY_KIND)
     const rows = stmt.all(kind) as Record<string, any>[]
     return rows.map(mapRowToNode)
   }
 
-  getNodesByQualifiedName(qname: string): CodeGraphNode[] {
+  getNodesByQualifiedName(qname: string): MiniCodeGraphNode[] {
     const stmt = this.db.prepare(Q.GET_NODES_BY_QUALIFIED_NAME)
     const rows = stmt.all(qname) as Record<string, any>[]
     return rows.map(mapRowToNode)
@@ -178,7 +188,7 @@ export class QueryManager {
     return { files: files.count, nodes: nodes.count, edges: edges.count, modules: modules?.count ?? 0 }
   }
 
-  insertNode(node: CodeGraphNode): void {
+  insertNode(node: MiniCodeGraphNode): void {
     const stmt = this.db.prepare(Q.INSERT_NODE)
     stmt.run(
       node.id, node.kind, node.name, node.qualifiedName,
@@ -262,7 +272,7 @@ export class QueryManager {
     return rows.map(r => ({ annotationName: r.annotation_name, value: r.value }))
   }
 
-  getNodesByAnnotation(annotationName: string): CodeGraphNode[] {
+  getNodesByAnnotation(annotationName: string): MiniCodeGraphNode[] {
     const stmt = this.db.prepare(Q.GET_NODES_BY_ANNOTATION)
     const rows = stmt.all(annotationName) as Record<string, any>[]
     return rows.map(mapRowToNode)

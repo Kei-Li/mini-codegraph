@@ -1,4 +1,19 @@
-export interface CodeGraphNode {
+export const NODE_KINDS = [
+  'file', 'module', 'class', 'struct', 'interface', 'trait', 'protocol',
+  'function', 'method', 'property', 'field', 'variable', 'constant',
+  'enum', 'enum_member', 'type_alias', 'namespace', 'parameter',
+  'import', 'export', 'route', 'component',
+] as const
+
+export type NodeKind = (typeof NODE_KINDS)[number]
+
+export type EdgeKind =
+  | 'contains' | 'calls' | 'imports' | 'exports'
+  | 'extends' | 'implements' | 'references'
+  | 'type_of' | 'returns' | 'instantiates'
+  | 'overrides' | 'decorates' | 'defines'
+
+export interface MiniCodeGraphNode {
   id: string
   kind: string
   name: string
@@ -18,7 +33,7 @@ export interface CodeGraphNode {
   metadata?: string
 }
 
-export interface CodeGraphEdge {
+export interface MiniCodeGraphEdge {
   source: string
   target: string
   kind: string
@@ -47,8 +62,8 @@ export interface ModuleInfo {
 }
 
 export interface ExtractionResult {
-  nodes: CodeGraphNode[]
-  edges: CodeGraphEdge[]
+  nodes: MiniCodeGraphNode[]
+  edges: MiniCodeGraphEdge[]
   errors: string[]
   unresolvedReferences?: UnresolvedReference[]
   modules?: ModuleInfo[]
@@ -86,7 +101,7 @@ export const SUPPORTED_LANGUAGES: LanguageConfig[] = [
 ]
 
 export interface SearchResult {
-  node: CodeGraphNode
+  node: MiniCodeGraphNode
   snippets: string[]
   score: number
 }
@@ -154,4 +169,66 @@ export interface VueApiCall {
   url: string
   handler: string
   line: number
+}
+
+export interface FullTraceHop {
+  kind: 'vue_page' | 'vue_api_call' | 'gateway_route' | 'controller_endpoint' | 'feign_call' | 'service_method' | 'mybatis_mapper' | 'sql_statement' | 'database_table' | 'mq_publish' | 'mq_subscribe' | 'cache_access'
+  id: string
+  name: string
+  moduleId?: string
+  filePath?: string
+  detail: string
+}
+
+export interface FullTrace {
+  id: string
+  hops: FullTraceHop[]
+  entryPoint: string
+  endpointPath: string
+  httpMethod: string
+}
+
+export interface ConfigPropertyBinding {
+  configClass: string
+  prefix: string
+  filePath: string
+  properties: { key: string; value: string; sourceFile: string; sourceLine: number }[]
+  moduleId: string
+}
+
+export interface TransactionalInfo {
+  nodeId: string
+  methodName: string
+  className: string
+  propagation: string
+  isolation: string
+  timeout: number
+  readOnly: boolean
+  rollbackFor: string[]
+  noRollbackFor: string[]
+  filePath: string
+  line: number
+}
+
+export interface CacheAnnotation {
+  type: 'Cacheable' | 'CacheEvict' | 'CachePut' | 'Caching'
+  cacheNames: string[]
+  key: string
+  condition: string
+  unless: string
+  keyGenerator: string
+  cacheManager: string
+  nodeId: string
+  methodName: string
+  className: string
+  filePath: string
+  line: number
+  moduleId: string
+}
+
+export interface CacheTopology {
+  cacheName: string
+  entries: CacheAnnotation[]
+  redisConfig?: { host: string; port: number; database: number; cluster: boolean }
+  relatedServices: string[]
 }

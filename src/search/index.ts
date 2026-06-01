@@ -1,55 +1,66 @@
-import type { CodeGraphNode } from '../types.js'
+export { damerauLevenshtein, findFuzzyMatches, extractSearchTerms, matchCamelCase, splitCamelCase } from './fuzzy.js'
 
-export interface ParsedQuery {
-  text: string
-  kind?: string
-  language?: string
-  file?: string
-}
+import { parseSearchQuery, buildFtsQuery, filterNodesByKind, filterNodesByLanguage, filterNodesByFile } from './query-parser.js'
+import type { ParsedQuery as PQP } from './query-parser.js'
+import { findFuzzyMatches } from './fuzzy.js'
+import { computePathRelevance } from '../generated.js'
+import type { MiniCodeGraphNode } from '../types.js'
 
-export function parseSearchQuery(query: string): ParsedQuery {
-  const result: ParsedQuery = { text: query }
+export type ParsedQuery = PQP
 
-  const kindMatch = query.match(/\bkind:(\w+)\b/)
-  if (kindMatch) {
-    result.kind = kindMatch[1]
-    result.text = result.text.replace(kindMatch[0], '').trim()
+export function runQualifiedSearch(
+  query: string,
+  searchFn: (query: string, limit: number) => { node: MiniCodeGraphNode; rank: number }[],
+  fuzzyFallbackFn?: (query: string, limit: number) => { node: MiniCodeGraphNode; rank: number }[],
+  limit = 20
+): { node: MiniCodeGraphNode; rank: number }[] {
+  const parsed = parseSearchQuery(query)
+  const rawResults = searchFn(parsed.text || query, limit)
+
+  let results = rawResults
+
+  if (parsed.kind) {
+    results = results.filter(r => parsed.kind!.split(',').includes(r.node.kind))
+  }
+  if (parsed.language) {
+    results = results.filter(r => r.node.language === parsed.language)
+  }
+  if (parsed.file) {
+    const regex = new RegExp(parsed.file.replace(/\*/g, '.*'), 'i')
+    results = results.filter(r => regex.test(r.node.filePath))
+  }
+  if (parsed.name) {
+    const nameLower = parsed.name.toLowerCase()
+    results = results.filter(r =>
+      r.node.name.toLowerCase().includes(nameLower) ||
+      r.node.qualifiedName.toLowerCase().includes(nameLower)
+    )
   }
 
-  const langMatch = query.match(/\blang:(\w+)\b/)
-  if (langMatch) {
-    result.language = langMatch[1]
-    result.text = result.text.replace(langMatch[0], '').trim()
+  if (results.length === 0 && fuzzyFallbackFn && parsed.text) {
+    results = fuzzyFallbackFn(parsed.text, limit)
   }
 
-  const fileMatch = query.match(/\bpath:(\S+)\b/)
-  if (fileMatch) {
-    result.file = fileMatch[1]
-    result.text = result.text.replace(fileMatch[0], '').trim()
-  }
+  results.sort((a, b) => {
+    const relevA = computePathRelevance(a.node.filePath)
+    const relevB = computePathRelevance(b.node.filePath)
+    if (relevA !== relevB) return relevB - relevA
+    return b.rank - a.rank
+  })
 
-  return result
+  return results.slice(0, limit)
 }
 
-export function buildFtsQuery(query: string): string {
-  // Escape special FTS5 characters and build match query
-  const terms = query
-    .replace(/[()*"']/g, ' ')
-    .split(/\s+/)
-    .filter(Boolean)
-    .map(t => `"${t}"`)
-    .join(' AND ')
-
-  return terms || query
+export function fuzzySearchFallback(
+  query: string,
+  allNodes: MiniCodeGraphNode[],
+  limit = 10
+): { node: MiniCodeGraphNode; rank: number }[] {
+  const fuzzyMatches = findFuzzyMatches(query, allNodes.map(n => ({ id: n.id, name: n.name, qualifiedName: n.qualifiedName })), limit)
+  const nodeMap = new Map(allNodes.map(n => [n.id, n]))
+  return fuzzyMatches
+    .map(m => ({ node: nodeMap.get(m.id)!, rank: 1 / (m.distance + 1) }))
+    .filter(m => m.node)
 }
 
-export function filterNodesByKind(nodes: CodeGraphNode[], kind?: string): CodeGraphNode[] {
-  if (!kind) return nodes
-  const kinds = kind.split(',')
-  return nodes.filter(n => kinds.includes(n.kind))
-}
-
-export function filterNodesByLanguage(nodes: CodeGraphNode[], language?: string): CodeGraphNode[] {
-  if (!language) return nodes
-  return nodes.filter(n => n.language === language)
-}
+export { parseSearchQuery, buildFtsQuery, filterNodesByKind, filterNodesByLanguage, filterNodesByFile } from './query-parser.js'

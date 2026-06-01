@@ -9,8 +9,8 @@ import { parseJavaFile } from './languages/java.js'
 import { parseTypeScriptFile } from './languages/typescript.js'
 import { parsePythonFile } from './languages/python.js'
 import { parseVueFile } from './languages/vue.js'
-import { findFiles, loadGitignore, computeContentHash, languageForFile } from '../utils.js'
-import type { CodeGraphNode, CodeGraphEdge, FileRecord, ExtractionResult, ModuleInfo, UnresolvedReference, MessageQueueBinding } from '../types.js'
+import { scanDirectory, findFiles, computeContentHash, languageForFile, validatePathWithinRoot } from '../utils.js'
+import type { MiniCodeGraphNode, MiniCodeGraphEdge, FileRecord, ExtractionResult, ModuleInfo, UnresolvedReference, MessageQueueBinding } from '../types.js'
 import { runResolutionPipeline, extractFileAnnotations, parseAndStoreVueTemplates } from '../resolution/index.js'
 import { indexMyBatisMappers, findMyBatisMapperDir } from './mybatis-extractor.js'
 import { detectSpring } from '../resolution/frameworks/java.js'
@@ -26,6 +26,30 @@ import { indexI18n } from './vue-i18n-extractor.js'
 import { indexGatewayRoutes } from './gateway-parser.js'
 import { indexQueueBindings } from './message-queue-parser.js'
 import { resolveVueApiToController } from './vue-api-mapper.js'
+import { indexConfigProperties } from './config-extractor.js'
+import { indexTransactionalAnnotations, findTxBoundaryConflicts } from './transaction-extractor.js'
+import { indexCacheAnnotations } from './cache-extractor.js'
+import { indexTraces } from './trace-analyzer.js'
+import { indexLombokAnnotations } from './lombok-extractor.js'
+import { indexGrpcProtoFiles, findProtoDir } from './grpc-parser.js'
+import { indexMapStructMappers } from './mapstruct-extractor.js'
+import { indexSpringAutoConfiguration } from './autoconfig-extractor.js'
+import { findMavenScopeConflicts, parsePomXml, indexMavenDependencies } from './maven-parser.js'
+import { indexGradleModules } from './gradle-parser.js'
+import { indexCloudConfigBindings, detectBootstrapConfig } from './cloud-config-extractor.js'
+import { indexLoadBalancerClients, resolveLbUris } from './loadbalancer-extractor.js'
+import { indexGraphQLEndpoints } from './graphql-extractor.js'
+import { indexWebSocketEndpoints } from './websocket-extractor.js'
+import { indexTestAnnotations } from './test-extractor.js'
+import { indexAsyncAnnotations } from './async-extractor.js'
+import { indexAopAnnotations, resolvePointcutMatches } from './aop-extractor.js'
+import { indexSecurityFilterChains, indexWebSecurityCustomizer } from './security-filter-extractor.js'
+import { indexK8sNetworkResources } from './k8s-network-extractor.js'
+import { indexControllerAdvice } from './controller-advice-extractor.js'
+import { indexInterceptors } from './interceptor-extractor.js'
+import { indexStreamFunctions } from './stream-function-extractor.js'
+import { indexJpaCustomQueries } from './jpa-query-extractor.js'
+import { indexProfileAnnotations } from './profile-extractor.js'
 
 export class ExtractionOrchestrator {
   private grammarLoader: GrammarLoader
@@ -55,8 +79,7 @@ export class ExtractionOrchestrator {
   }
 
   async indexProject(projectRoot: string, moduleId?: string): Promise<ExtractionResult> {
-    const isIgnored = loadGitignore(projectRoot)
-    const files = findFiles(projectRoot, isIgnored)
+    const files = scanDirectory(projectRoot)
 
     console.error(`Found ${files.length} supported files to index`)
 
@@ -151,6 +174,90 @@ export class ExtractionOrchestrator {
       process.stderr.write(`  Found ${allMqBindings.length} MQ bindings\n`)
     }
 
+    process.stderr.write('Indexing config properties...\n')
+    const configBindings = indexConfigProperties(this.queries, projectRoot, mid)
+    if (configBindings.length > 0) {
+      process.stderr.write(`  Found ${configBindings.length} @ConfigurationProperties bindings\n`)
+    }
+
+    process.stderr.write('Indexing transactional annotations...\n')
+    const txInfos = indexTransactionalAnnotations(this.queries, mid)
+    if (txInfos.length > 0) {
+      process.stderr.write(`  Found ${txInfos.length} @Transactional annotations\n`)
+      const txConflicts = findTxBoundaryConflicts(this.queries, mid)
+      if (txConflicts.length > 0) {
+        process.stderr.write(`  Found ${txConflicts.length} transaction boundary conflicts\n`)
+      }
+    }
+
+    process.stderr.write('Indexing cache annotations...\n')
+    const cacheResult = indexCacheAnnotations(this.queries, projectRoot, mid)
+    if (cacheResult.annotations.length > 0) {
+      process.stderr.write(`  Found ${cacheResult.annotations.length} cache annotations (${cacheResult.topologies.length} cache topologies)\n`)
+    }
+
+    process.stderr.write('Indexing @ConditionalOnProperty / auto-configuration...\n')
+    const autoConfigs = indexSpringAutoConfiguration(this.queries, mid, projectRoot)
+    if (autoConfigs.length > 0) {
+      process.stderr.write(`  Found ${autoConfigs.length} conditional configuration classes\n`)
+    }
+
+    const pomPath = join(projectRoot, 'pom.xml')
+    if (existsSync(pomPath)) {
+      try {
+        process.stderr.write('Parsing Maven pom.xml...\n')
+        const pomXml = readFileSync(pomPath, 'utf-8')
+        const mavenConfig = parsePomXml(pomXml, projectRoot, pomPath)
+        indexMavenDependencies(this.queries, mavenConfig, mid)
+        process.stderr.write(`  Maven module: ${mavenConfig.module.artifactId}, ${mavenConfig.dependencies.length} dependencies\n`)
+      } catch (e) {
+        process.stderr.write(`  Failed to parse pom.xml: ${e}\n`)
+      }
+    } else {
+      const settingsGradle = join(projectRoot, 'settings.gradle')
+      const settingsGradleKts = join(projectRoot, 'settings.gradle.kts')
+      if (existsSync(settingsGradle) || existsSync(settingsGradleKts)) {
+        process.stderr.write('Indexing Gradle modules...\n')
+        const gradleModules = indexGradleModules(this.queries, projectRoot, mid)
+        process.stderr.write(`  Found ${gradleModules.length} Gradle modules\n`)
+      }
+    }
+
+    process.stderr.write('Indexing Spring Cloud Config...\n')
+    const cloudCfgBindings = indexCloudConfigBindings(this.queries, mid)
+    if (cloudCfgBindings.length > 0) {
+      process.stderr.write(`  Found ${cloudCfgBindings.length} @RefreshScope beans\n`)
+    }
+    const bootstrapCfg = detectBootstrapConfig(projectRoot)
+    if (bootstrapCfg.enabled) {
+      process.stderr.write(`  Spring Cloud Config Server: ${bootstrapCfg.configServerUri || 'unknown'}\n`)
+    }
+
+    process.stderr.write('Indexing @LoadBalanced clients...\n')
+    const lbClients = indexLoadBalancerClients(this.queries, mid)
+    if (lbClients.length > 0) {
+      process.stderr.write(`  Found ${lbClients.length} @LoadBalanced clients\n`)
+    }
+    const lbUris = resolveLbUris(this.queries, mid)
+    if (lbUris.length > 0) {
+      process.stderr.write(`  Resolved ${lbUris.length} lb:// URIs\n`)
+    }
+
+    const protoDir = findProtoDir(projectRoot)
+    if (protoDir) {
+      process.stderr.write(`Indexing gRPC proto files in ${protoDir}...\n`)
+      const grpcResult = indexGrpcProtoFiles(this.queries, projectRoot, protoDir, mid)
+      if (grpcResult.services.length > 0) {
+        process.stderr.write(`  Found ${grpcResult.services.length} gRPC services, ${grpcResult.messages.length} proto messages\n`)
+      }
+    }
+
+    process.stderr.write('Indexing K8s network resources (Ingress/Service/NetworkPolicy)...\n')
+    const k8sNet = indexK8sNetworkResources(this.queries, projectRoot, mid)
+    if (k8sNet.services.length > 0 || k8sNet.ingresses.length > 0 || k8sNet.networkPolicies.length > 0) {
+      process.stderr.write(`  ${k8sNet.services.length} Services, ${k8sNet.ingresses.length} Ingresses, ${k8sNet.networkPolicies.length} NetworkPolicies\n`)
+    }
+
     return result
   }
 
@@ -227,10 +334,25 @@ export class ExtractionOrchestrator {
       }
     }
 
+    process.stderr.write('Building full traces (Vue→Gateway→Service→DB)...\n')
+    for (const mod of modules) {
+      indexConfigProperties(this.queries, mod.rootPath, mod.id)
+      indexTransactionalAnnotations(this.queries, mod.id)
+      indexCacheAnnotations(this.queries, mod.rootPath, mod.id)
+    }
+    const traces = indexTraces(this.queries, 'multi')
+    if (traces.length > 0) {
+      process.stderr.write(`  Built ${traces.length} full request traces\n`)
+    }
+
     return result
   }
 
   async indexFile(filePath: string, projectRoot: string, moduleId?: string): Promise<ExtractionResult> {
+    const validated = validatePathWithinRoot(projectRoot, filePath)
+    if (!validated) return { nodes: [], edges: [], errors: [`Path rejected: ${filePath} is outside project root ${projectRoot}`] }
+    filePath = validated
+
     const lang = languageForFile(filePath)
     if (!lang) return { nodes: [], edges: [], errors: [`Unsupported language: ${filePath}`] }
 
@@ -249,9 +371,15 @@ export class ExtractionOrchestrator {
     let stat!: import('node:fs').Stats
     let contentHash!: string
     let relPath!: string
+    let useStrippedSource = false
+    let strippedSource: string | undefined
 
     const parseWithRetry = async (attempt: number): Promise<{ parser: Parser; tree: Parser.Tree; source: string; stat: import('node:fs').Stats; contentHash: string; relPath: string }> => {
-      source = readFileSync(filePath, 'utf-8')
+      if (!useStrippedSource) {
+        source = readFileSync(filePath, 'utf-8')
+      } else {
+        source = strippedSource!
+      }
       stat = statSync(filePath)
       relPath = relative(projectRoot, filePath).replace(/\\/g, '/')
       contentHash = computeContentHash(source)
@@ -282,19 +410,39 @@ export class ExtractionOrchestrator {
         break
       } catch (e) {
         const errMsg = String(e)
-        if (parseAttempt < 1 && (errMsg.includes('out of memory') || errMsg.includes('OOM') || errMsg.includes('abort') || errMsg.includes('RuntimeError'))) {
+        const isOom = errMsg.includes('out of memory') || errMsg.includes('OOM') || errMsg.includes('abort') || errMsg.includes('RuntimeError') || errMsg.includes('memory access out of bounds')
+
+        // Tier 1: retry with fresh grammar (WASM heap reset)
+        if (isOom && parseAttempt < 1) {
           parseAttempt++
           console.error(`  OOM on ${filePath}, retrying with fresh grammar (attempt ${parseAttempt})...`)
           this.grammarLoader.resetParser(lang.grammarName)
           await new Promise(resolve => setTimeout(resolve, 200))
           continue
         }
+
+        // Tier 2: retry with comments stripped (reduces WASM memory pressure)
+        if (isOom && parseAttempt < 2 && !useStrippedSource) {
+          parseAttempt++
+          useStrippedSource = true
+          strippedSource = source
+            .split('\n')
+            .map(line => /^\s*\/\//.test(line) ? '' : line)
+            .join('\n')
+          console.error(`  OOM on ${filePath}, retrying with comments stripped (attempt ${parseAttempt})...`)
+          this.grammarLoader.resetParser(lang.grammarName)
+          await new Promise(resolve => setTimeout(resolve, 200))
+          continue
+        }
+
+        // Tier 3: general retry for non-OOM errors
         if (parseAttempt < 2) {
           parseAttempt++
           console.error(`  Retry ${parseAttempt} for ${filePath}: ${errMsg.slice(0, 100)}`)
           await new Promise(resolve => setTimeout(resolve, 100))
           continue
         }
+
         return { nodes: [], edges: [], errors: [`Error processing ${filePath}: ${errMsg}`] }
       }
     }
@@ -311,9 +459,9 @@ export class ExtractionOrchestrator {
       this.db.transaction(() => {
         this.queries.deleteNodesForFile(relPath)
 
-        const nodeMap = new Map<string, CodeGraphNode>()
+        const nodeMap = new Map<string, MiniCodeGraphNode>()
         for (const ni of parseResult.nodes) {
-          const node: CodeGraphNode = {
+          const node: MiniCodeGraphNode = {
             id: `${relPath}:${ni.name}:${ni.startLine}`,
             kind: ni.kind,
             name: ni.name,
@@ -358,6 +506,19 @@ export class ExtractionOrchestrator {
         indexSecurity(this.queries, source, relPath, mid)
         indexBatchJobs(this.queries, source, relPath, mid)
         indexResilience(this.queries, source, relPath, mid)
+        indexLombokAnnotations(this.queries, source, relPath, mid)
+        indexMapStructMappers(this.queries, source, relPath, mid)
+        indexGraphQLEndpoints(this.queries, source, relPath, mid)
+        indexWebSocketEndpoints(this.queries, source, relPath, mid)
+        indexTestAnnotations(this.queries, source, relPath, mid)
+        indexAsyncAnnotations(this.queries, source, relPath, mid)
+        indexAopAnnotations(this.queries, source, relPath, mid)
+        indexSecurityFilterChains(this.queries, source, relPath, mid)
+        indexControllerAdvice(this.queries, source, relPath, mid)
+        indexInterceptors(this.queries, source, relPath, mid)
+        indexStreamFunctions(this.queries, source, relPath, mid)
+        indexJpaCustomQueries(this.queries, source, relPath, mid)
+        indexProfileAnnotations(this.queries, source, relPath, mid)
       }
 
       if (lang.name === 'vue') {
@@ -438,7 +599,7 @@ export class ExtractionOrchestrator {
               this.queries.deleteNodesForFile(relPath)
 
               for (const ni of msg.result.nodes) {
-                const node: CodeGraphNode = {
+                const node: MiniCodeGraphNode = {
                   id: `${relPath}:${ni.name}:${ni.startLine}`,
                   kind: ni.kind, name: ni.name,
                   qualifiedName: ni.qualifiedName,
@@ -567,7 +728,7 @@ export class ExtractionOrchestrator {
     const entries = readdirSync(parentDir, { withFileTypes: true })
     for (const entry of entries) {
       if (!entry.isDirectory()) continue
-      if (entry.name.startsWith('.') || entry.name === 'node_modules' || entry.name === '.codegraph') continue
+      if (entry.name.startsWith('.') || entry.name === 'node_modules' || entry.name === '.mini-codegraph') continue
       const subPath = join(parentDir, entry.name)
 
       if (seen.has(subPath)) continue

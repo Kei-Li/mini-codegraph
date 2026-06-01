@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import type { QueryManager } from '../db/queries.js'
-import type { CodeGraphNode } from '../types.js'
+import type { MiniCodeGraphNode } from '../types.js'
 
 const EXTENSION_RESOLUTION = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.vue', '.java', '.kt']
 
@@ -160,7 +160,7 @@ export function resolveJvmImport(
   queries: QueryManager,
   fqn: string,
   simpleName: string
-): CodeGraphNode | null {
+): MiniCodeGraphNode | null {
   const byQName = queries.getNodesByQualifiedName(fqn)
   if (byQName.length > 0) return byQName[0]
 
@@ -181,7 +181,7 @@ export function resolveViaImportChain(
   sourceFile: string,
   fileImports: ImportMapping[],
   sourceModuleId: string
-): CodeGraphNode | null {
+): MiniCodeGraphNode | null {
   for (const imp of fileImports) {
     if (imp.localName === refName) {
       const candidates = queries.searchNodes(imp.localName, 20)

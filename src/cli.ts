@@ -22,11 +22,12 @@ program
 
 program
   .command('init')
-  .description('Initialize a codegraph database for a project')
+  .description('Initialize a mini-codegraph database for a project')
   .argument('[path]', 'Project root path', process.cwd())
   .option('-i, --index', 'Also index after initialization')
+  .option('-y, --yes', 'Non-interactive, accept defaults')
   .option('--multi-module', 'Discover and initialize sub-modules (Maven/Gradle multi-module)')
-  .action(async (path: string, options: { index?: boolean; multiModule?: boolean }) => {
+  .action(async (path: string, options: { index?: boolean; yes?: boolean; multiModule?: boolean }) => {
     const resolvedPath = resolve(path)
 
     if (options.multiModule) {
@@ -36,7 +37,7 @@ program
         process.exit(1)
       }
 
-      console.error(`Initialized multi-module codegraph for ${resolvedPath}`)
+      console.error(`Initialized multi-module mini-codegraph for ${resolvedPath}`)
       console.error(`Found ${modules.length} sub-modules:`)
       for (const mod of modules) {
         console.error(`  [${mod.language}] ${mod.name} (${mod.buildSystem}) — ${mod.rootPath}`)
@@ -60,7 +61,7 @@ program
     }
 
     const cg = MiniCodeGraph.init(resolvedPath)
-    console.error(`Initialized codegraph for ${resolvedPath}`)
+    console.error(`Initialized mini-codegraph for ${resolvedPath}`)
 
     if (options.index) {
       console.error('Indexing...')
@@ -140,8 +141,21 @@ program
   .command('sync')
   .description('Incremental update — index only new/changed files')
   .argument('[path]', 'Project root path', process.cwd())
-  .action(async (path: string) => {
+  .option('--git-hooks', 'Install git hooks for auto-sync on commit/merge/checkout')
+  .action(async (path: string, options: { gitHooks?: boolean }) => {
     const resolvedPath = resolve(path)
+
+    if (options.gitHooks) {
+      const { installGitSyncHook } = await import('./sync/git-hooks.js')
+      const result = installGitSyncHook(resolvedPath)
+      if (result.installed.length > 0) {
+        console.error(`Git sync hooks installed: ${result.installed.join(', ')}`)
+      } else {
+        console.error(result.skipped ?? 'No git repository found or hooks already installed.')
+      }
+      return
+    }
+
     const cg = MiniCodeGraph.open(resolvedPath)
     if (!cg) {
       console.error('No index found. Run init + index first.')
@@ -180,8 +194,32 @@ program
   .description('Start the MCP server over stdio')
   .argument('[path]', 'Project root path', process.cwd())
   .option('--daemon', 'Run in daemon mode with file watching')
-  .action(async (path: string, options: { daemon?: boolean }) => {
+  .option('--shared', 'Run in shared daemon mode (multi-client over Unix socket)')
+  .action(async (path: string, options: { daemon?: boolean; shared?: boolean }) => {
     const resolvedPath = resolve(path)
+
+    if (options.shared) {
+      const { SharedDaemon } = await import('./daemon/shared.js')
+      const cg = MiniCodeGraph.open(resolvedPath)
+      if (!cg) {
+        console.error(`No index found for ${resolvedPath}. Run 'mini-cg init' and 'mini-cg index' first.`)
+        process.exit(1)
+      }
+
+      const graph = cg.getGraph()
+      graph.checkStaleFiles()
+      const sharedDaemon = new SharedDaemon({ idleTimeoutMs: 300_000 })
+
+      sharedDaemon.setCallbacks(
+        (id) => { console.error(`[shared] Client connected: ${id}`) },
+        (id) => { console.error(`[shared] Client disconnected: ${id}`) }
+      )
+
+      await sharedDaemon.start()
+      console.error(`Shared daemon started. PID: ${process.pid}`)
+      process.stdin.resume()
+      return
+    }
 
     if (options.daemon) {
       const cg = MiniCodeGraph.open(resolvedPath)
@@ -194,7 +232,7 @@ program
 
       const graph = cg.getGraph()
       graph.checkStaleFiles()
-      const daemon = new DaemonServer(resolvedPath, graph)
+      const daemon = new DaemonServer(resolvedPath, graph, () => cg.getPendingFiles())
       try {
         await daemon.start()
         process.stdin.resume()
@@ -454,7 +492,8 @@ program
   .command('routes')
   .description('Detect web framework routes in the project')
   .argument('[path]', 'Project root path', process.cwd())
-  .action((path: string) => {
+  .option('--manifest', 'Show full routing manifest (URL→handler mapping)')
+  .action((path: string, options: { manifest?: boolean }) => {
     const resolvedPath = resolve(path)
     const cg = MiniCodeGraph.open(resolvedPath)
     if (!cg) {
@@ -462,8 +501,13 @@ program
       process.exit(1)
     }
 
-    const routes = cg.getRoutes()
-    console.log(JSON.stringify({ routes, frameworkCount: [...new Set(routes.map(r => r.framework))].length }, null, 2))
+    if (options.manifest) {
+      const manifest = cg.getGraph().getRoutingManifest()
+      console.log(JSON.stringify({ routingManifest: manifest, count: manifest.length }, null, 2))
+    } else {
+      const routes = cg.getRoutes()
+      console.log(JSON.stringify({ routes, frameworkCount: [...new Set(routes.map(r => r.framework))].length }, null, 2))
+    }
     cg.close()
   })
 
@@ -752,13 +796,13 @@ program
   .command('diagram')
   .description('Generate Mermaid architecture diagrams')
   .argument('[path]', 'Project root path', process.cwd())
-  .option('-t, --type <type>', 'Diagram type: architecture, dependencies, sequence, all', 'all')
+  .option('-t, --type <type>', 'Diagram type: architecture, dependencies, sequence, trace, cache, tx, all', 'all')
   .action(async (path: string, options: { type: string }) => {
     const resolvedPath = resolve(path)
     const cg = MiniCodeGraph.open(resolvedPath)
     if (!cg) { console.error('No index found.'); process.exit(1) }
 
-    const { generateArchitectureDiagram, generateServiceDependencyDiagram, generateSequenceDiagram, getAllMermaidDiagrams } = await import('./visualization/mermaid.js')
+    const { generateArchitectureDiagram, generateServiceDependencyDiagram, generateSequenceDiagram, generateFullTraceDiagram, generateCacheTopologyDiagram, generateTxPropagationDiagram, getAllMermaidDiagrams } = await import('./visualization/mermaid.js')
     const queries = cg.getGraph().getQueries()
 
     switch (options.type) {
@@ -770,6 +814,15 @@ program
         break
       case 'sequence':
         console.log(generateSequenceDiagram(queries, ''))
+        break
+      case 'trace':
+        console.log(generateFullTraceDiagram(queries))
+        break
+      case 'cache':
+        console.log(generateCacheTopologyDiagram(queries))
+        break
+      case 'tx':
+        console.log(generateTxPropagationDiagram(queries))
         break
       default: {
         const diagrams = getAllMermaidDiagrams(queries)
@@ -785,9 +838,327 @@ program
   })
 
 program
+  .command('trace')
+  .description('Show full request traces (Vue → Gateway → Service → DB)')
+  .argument('[path]', 'Project root path', process.cwd())
+  .option('-p, --path <path>', 'Filter by endpoint path')
+  .option('-s, --service <name>', 'Filter by service name')
+  .action((path: string, options: { path?: string; service?: string }) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    const graph = cg.getGraph()
+    let traces = graph.getFullTraces()
+    if (options.path) traces = [graph.getFullTraceByEndpoint(options.path)].filter(Boolean) as any
+    if (options.service) traces = graph.getFullTracesByService(options.service)
+    console.log(JSON.stringify({ traces: traces.slice(0, 20), count: Math.min(traces.length, 20) }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('config')
+  .description('Show @ConfigurationProperties bindings')
+  .argument('[path]', 'Project root path', process.cwd())
+  .option('-p, --prefix <prefix>', 'Filter by config prefix')
+  .action((path: string, options: { prefix?: string }) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    const bindings = cg.getGraph().getConfigBindings()
+    const filtered = options.prefix ? bindings.filter(b => b.prefix.startsWith(options.prefix!)) : bindings
+    console.log(JSON.stringify({ configBindings: filtered, count: filtered.length }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('tx')
+  .description('Show @Transactional annotations and propagation chains')
+  .argument('[path]', 'Project root path', process.cwd())
+  .option('--conflicts', 'Show only boundary conflicts')
+  .action((path: string, options: { conflicts?: boolean }) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    const graph = cg.getGraph()
+    if (options.conflicts) {
+      const conflicts = graph.getTxBoundaryConflicts()
+      console.log(JSON.stringify({ txConflicts: conflicts, count: conflicts.length }, null, 2))
+    } else {
+      const txs = graph.getTxAnnotations()
+      console.log(JSON.stringify({ txAnnotations: txs, count: txs.length }, null, 2))
+    }
+    cg.close()
+  })
+
+program
+  .command('cache')
+  .description('Show cache annotations and cache topology')
+  .argument('[path]', 'Project root path', process.cwd())
+  .action((path: string) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    const topologies = cg.getGraph().getCacheTopologies()
+    console.log(JSON.stringify({ cacheTopologies: topologies, count: topologies.length }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('lombok')
+  .description('Show Lombok-synthesized getters, setters, constructors')
+  .argument('[path]', 'Project root path', process.cwd())
+  .option('-c, --class <name>', 'Filter by class name')
+  .action((path: string, options: { class?: string }) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    let synthetics = cg.getGraph().getLombokSynthetics()
+    if (options.class) synthetics = synthetics.filter(s => s.nodeId.includes(options.class!))
+    console.log(JSON.stringify({ lombokSynthetics: synthetics, count: synthetics.length }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('grpc')
+  .description('Show gRPC services and proto messages')
+  .argument('[path]', 'Project root path', process.cwd())
+  .action((path: string) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    const services = cg.getGraph().getGrpcServices()
+    console.log(JSON.stringify({ grpcServices: services, count: services.length }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('mapstruct')
+  .description('Show MapStruct mappers with source→target DTO mappings')
+  .argument('[path]', 'Project root path', process.cwd())
+  .action((path: string) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    const mappers = cg.getGraph().getMapStructMappers()
+    console.log(JSON.stringify({ mapstructMappers: mappers, count: mappers.length }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('autoconfig')
+  .description('Show @ConditionalOn* / @AutoConfiguration conditional configuration')
+  .argument('[path]', 'Project root path', process.cwd())
+  .action((path: string) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    const configs = cg.getGraph().getAutoConfigurations()
+    console.log(JSON.stringify({ autoConfigurations: configs, count: configs.length }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('maven')
+  .description('Show Maven module dependency graph')
+  .argument('[path]', 'Project root path', process.cwd())
+  .action((path: string) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    const modules = cg.getGraph().getMavenModules()
+    const conflicts = cg.getGraph().getMavenScopeConflicts()
+    console.log(JSON.stringify({ mavenModules: modules, scopeConflicts: conflicts }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('gradle')
+  .description('Show Gradle module dependency graph')
+  .argument('[path]', 'Project root path', process.cwd())
+  .action((path: string) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    console.log(JSON.stringify({ gradleModules: cg.getGraph().getGradleModules() }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('cloud-config')
+  .description('Show @RefreshScope and Spring Cloud Config bindings')
+  .argument('[path]', 'Project root path', process.cwd())
+  .action((path: string) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    console.log(JSON.stringify({ cloudConfigs: cg.getGraph().getCloudConfigs() }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('loadbalancer')
+  .description('Show @LoadBalanced clients and lb:// URI targets')
+  .argument('[path]', 'Project root path', process.cwd())
+  .action((path: string) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    console.log(JSON.stringify({ lbClients: cg.getGraph().getLoadBalancerClients(), lbUris: cg.getGraph().getLoadBalancerUris() }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('graphql')
+  .description('Show GraphQL @QueryMapping / @MutationMapping endpoints')
+  .argument('[path]', 'Project root path', process.cwd())
+  .action((path: string) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    console.log(JSON.stringify({ graphqlEndpoints: cg.getGraph().getGraphQLEndpoints() }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('websocket')
+  .description('Show WebSocket @MessageMapping / @SendTo endpoints')
+  .argument('[path]', 'Project root path', process.cwd())
+  .action((path: string) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    console.log(JSON.stringify({ websocketEndpoints: cg.getGraph().getWebSocketEndpoints() }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('test')
+  .description('Show test annotations (@SpringBootTest, @MockBean, etc.)')
+  .argument('[path]', 'Project root path', process.cwd())
+  .action((path: string) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    console.log(JSON.stringify({ testAnnotations: cg.getGraph().getTestAnnotations() }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('async')
+  .description('Show @Async and @Scheduled methods')
+  .argument('[path]', 'Project root path', process.cwd())
+  .action((path: string) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    console.log(JSON.stringify({ asyncMethods: cg.getGraph().getAsyncMethods() }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('aop')
+  .description('Show AOP @Aspect advices and pointcut weaving')
+  .argument('[path]', 'Project root path', process.cwd())
+  .action((path: string) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    console.log(JSON.stringify({ aspects: cg.getGraph().getAspectAdvices() }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('security-filter')
+  .description('Show SecurityFilterChain / HttpSecurity authorization rules')
+  .argument('[path]', 'Project root path', process.cwd())
+  .action((path: string) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    console.log(JSON.stringify({ securityFilters: cg.getGraph().getSecurityFilterRules() }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('k8s-net')
+  .description('Show K8s Ingress/Service/NetworkPolicy details')
+  .argument('[path]', 'Project root path', process.cwd())
+  .action((path: string) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    console.log(JSON.stringify({
+      services: cg.getGraph().getK8sServiceDetails(),
+      ingresses: cg.getGraph().getK8sIngressDetails(),
+      networkPolicies: cg.getGraph().getK8sNetworkPolicies(),
+    }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('advice')
+  .description('Show @ControllerAdvice / @ExceptionHandler global handlers')
+  .argument('[path]', 'Project root path', process.cwd())
+  .action((path: string) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    console.log(JSON.stringify({ controllerAdvices: cg.getGraph().getControllerAdvices() }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('interceptor')
+  .description('Show HandlerInterceptor / Filter chain')
+  .argument('[path]', 'Project root path', process.cwd())
+  .action((path: string) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    console.log(JSON.stringify({ interceptors: cg.getGraph().getInterceptors() }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('stream-func')
+  .description('Show Spring Cloud Stream functional beans (Function/Consumer/Supplier)')
+  .argument('[path]', 'Project root path', process.cwd())
+  .action((path: string) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    console.log(JSON.stringify({ streamFunctions: cg.getGraph().getStreamFunctions() }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('jpa-query')
+  .description('Show JPA @Query / @Modifying / @Procedure custom queries')
+  .argument('[path]', 'Project root path', process.cwd())
+  .action((path: string) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    console.log(JSON.stringify({ jpaQueries: cg.getGraph().getJpaCustomQueries(), procedures: cg.getGraph().getJpaProcedures() }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('profile')
+  .description('Show @Profile annotations — which beans activate in which environments')
+  .argument('[path]', 'Project root path', process.cwd())
+  .action((path: string) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    console.log(JSON.stringify({ profiles: cg.getGraph().getProfileAnnotations() }, null, 2))
+    cg.close()
+  })
+
+program
   .command('install')
   .description('Install and configure mini-codegraph for AI agents')
-  .option('--target <agents>', 'Comma-separated agent targets (opencode, claude, cursor, codex)')
+  .option('--target <agents>', 'Comma-separated agent targets (opencode, claude, cursor, codex, gemini, hermes, antigravity, kiro)')
   .option('--yes', 'Non-interactive, accept defaults')
   .option('--location <type>', 'Install location: global or local (default: global)')
   .action(async (options: { target?: string; yes?: boolean; location?: string }) => {
@@ -859,6 +1230,115 @@ program
           break
         }
 
+        case 'cursor': {
+          const configDir = join(homedir(), '.cursor')
+          const configPath = join(configDir, 'mcp.json')
+          let cursorConfig: any = { mcpServers: {} }
+          if (existsSync(configPath)) {
+            try {
+              cursorConfig = JSON.parse(readFileSync(configPath, 'utf-8'))
+            } catch {}
+          }
+          cursorConfig.mcpServers = cursorConfig.mcpServers || {}
+          cursorConfig.mcpServers['mini-codegraph'] = {
+            type: 'stdio',
+            command: 'mini-cg',
+            args: ['serve'],
+          }
+          if (!existsSync(configDir)) mkdirSync(configDir, { recursive: true })
+          configs.push({ agent: 'cursor', configPath, config: cursorConfig })
+          break
+        }
+
+        case 'codex': {
+          const cliPath = ensureCliOnPath()
+          const configPath = join(process.cwd(), '.codex.json')
+          let codexConfig: any = {}
+          if (existsSync(configPath)) {
+            try { codexConfig = JSON.parse(readFileSync(configPath, 'utf-8')) } catch {}
+          }
+          codexConfig.mcpServers = codexConfig.mcpServers || {}
+          codexConfig.mcpServers['mini-codegraph'] = {
+            type: 'stdio',
+            command: 'mini-cg',
+            args: ['serve'],
+          }
+          configs.push({ agent: 'codex', configPath, config: codexConfig })
+          break
+        }
+
+        case 'gemini': {
+          const configPath = join(homedir(), '.gemini', 'mcp.json')
+          let geminiConfig: any = { mcpServers: {} }
+          if (existsSync(configPath)) {
+            try { geminiConfig = JSON.parse(readFileSync(configPath, 'utf-8')) } catch {}
+          }
+          geminiConfig.mcpServers = geminiConfig.mcpServers || {}
+          geminiConfig.mcpServers['mini-codegraph'] = {
+            type: 'stdio',
+            command: 'mini-cg',
+            args: ['serve'],
+          }
+          const configDir = join(homedir(), '.gemini')
+          if (!existsSync(configDir)) mkdirSync(configDir, { recursive: true })
+          configs.push({ agent: 'gemini', configPath, config: geminiConfig })
+          break
+        }
+
+        case 'hermes': {
+          const configDir = join(homedir(), '.config', 'hermes')
+          const configPath = join(configDir, 'config.json')
+          let hermesConfig: any = { mcpServers: {} }
+          if (existsSync(configPath)) {
+            try { hermesConfig = JSON.parse(readFileSync(configPath, 'utf-8')) } catch {}
+          }
+          hermesConfig.mcpServers = hermesConfig.mcpServers || {}
+          hermesConfig.mcpServers['mini-codegraph'] = {
+            type: 'stdio',
+            command: 'mini-cg',
+            args: ['serve'],
+          }
+          if (!existsSync(configDir)) mkdirSync(configDir, { recursive: true })
+          configs.push({ agent: 'hermes', configPath, config: hermesConfig })
+          break
+        }
+
+        case 'antigravity': {
+          const configDir = join(homedir(), '.antigravity')
+          const configPath = join(configDir, 'mcp.json')
+          let agConfig: any = { mcpServers: {} }
+          if (existsSync(configPath)) {
+            try { agConfig = JSON.parse(readFileSync(configPath, 'utf-8')) } catch {}
+          }
+          agConfig.mcpServers = agConfig.mcpServers || {}
+          agConfig.mcpServers['mini-codegraph'] = {
+            type: 'stdio',
+            command: 'mini-cg',
+            args: ['serve'],
+          }
+          if (!existsSync(configDir)) mkdirSync(configDir, { recursive: true })
+          configs.push({ agent: 'antigravity', configPath, config: agConfig })
+          break
+        }
+
+        case 'kiro': {
+          const configPath = join(homedir(), '.kiro', 'mcp.json')
+          let kiroConfig: any = { mcpServers: {} }
+          if (existsSync(configPath)) {
+            try { kiroConfig = JSON.parse(readFileSync(configPath, 'utf-8')) } catch {}
+          }
+          kiroConfig.mcpServers = kiroConfig.mcpServers || {}
+          kiroConfig.mcpServers['mini-codegraph'] = {
+            type: 'stdio',
+            command: 'mini-cg',
+            args: ['serve'],
+          }
+          const configDir = join(homedir(), '.kiro')
+          if (!existsSync(configDir)) mkdirSync(configDir, { recursive: true })
+          configs.push({ agent: 'kiro', configPath, config: kiroConfig })
+          break
+        }
+
         default:
           console.error(`Unknown agent target: ${target}`)
       }
@@ -871,7 +1351,7 @@ program
 
     if (configs.length > 0) {
       const projectRoot = process.cwd()
-      if (!existsSync(join(projectRoot, '.codegraph', 'codegraph.db'))) {
+      if (!existsSync(join(projectRoot, '.mini-codegraph', 'mini-cg.db'))) {
         console.error('Note: project not initialized. Run "mini-cg init" and "mini-cg index" first.')
       }
       console.error('Done!')

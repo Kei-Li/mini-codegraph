@@ -1,9 +1,9 @@
 import type { QueryManager } from '../db/queries.js'
-import type { CodeGraphNode, ModuleInfo } from '../types.js'
+import type { MiniCodeGraphNode, ModuleInfo } from '../types.js'
 import { isGeneratedFile, isSpringServiceImpl, findSpringImplName } from '../generated.js'
 
 export interface PathHop {
-  node: CodeGraphNode
+  node: MiniCodeGraphNode
   edgeKind: string
   detail?: string
 }
@@ -90,8 +90,8 @@ export class GraphTraverser {
     return paths
   }
 
-  findCrossServiceCallees(node: CodeGraphNode): { node: CodeGraphNode; detail: string }[] {
-    const results: { node: CodeGraphNode; detail: string }[] = []
+  findCrossServiceCallees(node: MiniCodeGraphNode): { node: MiniCodeGraphNode; detail: string }[] {
+    const results: { node: MiniCodeGraphNode; detail: string }[] = []
 
     // Follow imports edges from this node's file
     const callees = this.queries.getCallees(node.id)
@@ -163,8 +163,8 @@ export class GraphTraverser {
     return results
   }
 
-  findImpactedNodes(nodeId: string, depth = 3): Map<string, CodeGraphNode> {
-    const impacted = new Map<string, CodeGraphNode>()
+  findImpactedNodes(nodeId: string, depth = 3): Map<string, MiniCodeGraphNode> {
+    const impacted = new Map<string, MiniCodeGraphNode>()
     const visited = new Set<string>()
 
     const dfs = (currentId: string, remainingDepth: number): void => {
@@ -195,8 +195,8 @@ export class GraphTraverser {
     return impacted
   }
 
-  findRelated(nodeIds: string[]): Map<string, { node: CodeGraphNode; relationships: string[] }> {
-    const result = new Map<string, { node: CodeGraphNode; relationships: string[] }>()
+  findRelated(nodeIds: string[]): Map<string, { node: MiniCodeGraphNode; relationships: string[] }> {
+    const result = new Map<string, { node: MiniCodeGraphNode; relationships: string[] }>()
     const seen = new Set<string>()
 
     for (const id of nodeIds) {
@@ -244,10 +244,10 @@ export class GraphTraverser {
     return result
   }
 
-  findImplementations(node: CodeGraphNode): CodeGraphNode[] {
+  findImplementations(node: MiniCodeGraphNode): MiniCodeGraphNode[] {
     if (!['interface', 'type_alias'].includes(node.kind)) return []
 
-    const results: CodeGraphNode[] = []
+    const results: MiniCodeGraphNode[] = []
     const allNodes = this.queries.searchNodes('', 10000)
     const nodeName = node.name
     const nodeQName = node.qualifiedName
@@ -294,9 +294,9 @@ export class GraphTraverser {
     return results
   }
 
-  findInterfaceCallers(methodNode: CodeGraphNode): CodeGraphNode[] {
+  findInterfaceCallers(methodNode: MiniCodeGraphNode): MiniCodeGraphNode[] {
     const callers = this.queries.getCallers(methodNode.id)
-    const results: CodeGraphNode[] = []
+    const results: MiniCodeGraphNode[] = []
 
     for (const caller of callers) {
       const callerNode = this.queries.getNode(caller.id)
@@ -329,9 +329,9 @@ export class GraphTraverser {
     return results
   }
 
-  findInterfaceForImpl(node: CodeGraphNode): CodeGraphNode[] {
+  findInterfaceForImpl(node: MiniCodeGraphNode): MiniCodeGraphNode[] {
     if (!['class', 'method'].includes(node.kind)) return []
-    const results: CodeGraphNode[] = []
+    const results: MiniCodeGraphNode[] = []
 
     if (node.kind === 'method' && node.parentId) {
       const parent = this.queries.getNode(node.parentId)
@@ -384,8 +384,8 @@ export class GraphTraverser {
     return results
   }
 
-  findCallbackTargets(node: CodeGraphNode): { node: CodeGraphNode; detail: string }[] {
-    const results: { node: CodeGraphNode; detail: string }[] = []
+  findCallbackTargets(node: MiniCodeGraphNode): { node: MiniCodeGraphNode; detail: string }[] {
+    const results: { node: MiniCodeGraphNode; detail: string }[] = []
 
     const callers = this.queries.getCallers(node.id)
     for (const caller of callers) {
@@ -419,8 +419,8 @@ export class GraphTraverser {
     return results
   }
 
-  findReactTargets(node: CodeGraphNode): { node: CodeGraphNode; detail: string }[] {
-    const results: { node: CodeGraphNode; detail: string }[] = []
+  findReactTargets(node: MiniCodeGraphNode): { node: MiniCodeGraphNode; detail: string }[] {
+    const results: { node: MiniCodeGraphNode; detail: string }[] = []
     const reactHooks = ['useState', 'useEffect', 'useCallback', 'useMemo', 'useReducer', 'useContext']
     const reactPatterns = ['setState', 'dispatch', 'createContext']
 
@@ -452,8 +452,8 @@ export class GraphTraverser {
     return results
   }
 
-  findDeadCode(): CodeGraphNode[] {
-    const allNodes: CodeGraphNode[] = this.queries.searchNodes('', 10000)
+  findDeadCode(): MiniCodeGraphNode[] {
+    const allNodes: MiniCodeGraphNode[] = this.queries.searchNodes('', 10000)
     return allNodes.filter(node => {
       if (['class', 'interface', 'enum'].includes(node.kind)) return false
       const callers = this.queries.getCallers(node.id)
@@ -523,8 +523,8 @@ export class GraphTraverser {
     return paths
   }
 
-  findCrossModuleReferences(nodeId: string): { node: CodeGraphNode; edgeKind: string; moduleId: string }[] {
-    const results: { node: CodeGraphNode; edgeKind: string; moduleId: string }[] = []
+  findCrossModuleReferences(nodeId: string): { node: MiniCodeGraphNode; edgeKind: string; moduleId: string }[] {
+    const results: { node: MiniCodeGraphNode; edgeKind: string; moduleId: string }[] = []
     const node = this.queries.getNode(nodeId)
     if (!node) return results
 

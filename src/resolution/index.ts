@@ -1,5 +1,5 @@
 import type { QueryManager } from '../db/queries.js'
-import type { CodeGraphNode, UnresolvedReference } from '../types.js'
+import type { MiniCodeGraphNode, UnresolvedReference } from '../types.js'
 import { matchReference } from './name-matcher.js'
 import { resolveViaImportChain, extractJavaImports, extractTypeScriptImports } from './import-resolver.js'
 import {
@@ -49,7 +49,8 @@ export class ReferenceResolver {
       for (const ref of batch) {
         const resolved = this.resolveOne(ref, ctx)
         if (resolved) {
-          this.queries.insertEdge(ref.sourceNodeId, resolved.id, ref.kind, ref.metadata, ref.line, ref.col)
+          const promotedKind = this.promoteEdgeKind(ref, resolved)
+          this.queries.insertEdge(ref.sourceNodeId, resolved.id, promotedKind, ref.metadata, ref.line, ref.col)
           totalResolved++
         }
       }
@@ -73,7 +74,34 @@ export class ReferenceResolver {
     return totalResolved
   }
 
-  private resolveOne(ref: UnresolvedReference, ctx: SpringResolverContext): CodeGraphNode | null {
+  private promoteEdgeKind(ref: UnresolvedReference, target: MiniCodeGraphNode): string {
+    const kind = ref.kind
+
+    if (kind === 'calls' && ['class', 'struct', 'constructor'].includes(target.kind)) {
+      return 'instantiates'
+    }
+
+    if (kind === 'instantiates' && ['function', 'method'].includes(target.kind)) {
+      return 'calls'
+    }
+
+    if (kind === 'extends') {
+      if (target.kind === 'interface' || target.kind === 'type_alias') {
+        return 'implements'
+      }
+    }
+
+    if (kind === 'imports') {
+      const refName = ref.referenceName
+      if (target.name === refName || target.qualifiedName === refName) {
+        return 'imports'
+      }
+    }
+
+    return kind
+  }
+
+  private resolveOne(ref: UnresolvedReference, ctx: SpringResolverContext): MiniCodeGraphNode | null {
     const node = this.queries.getNode(ref.sourceNodeId)
     if (!node) return null
 
@@ -112,7 +140,7 @@ export class ReferenceResolver {
     return null
   }
 
-  private resolveImport(importPath: string, node: CodeGraphNode): CodeGraphNode | null {
+  private resolveImport(importPath: string, node: MiniCodeGraphNode): MiniCodeGraphNode | null {
     const ext = extname(node.filePath)
     const sourceDir = node.filePath.substring(0, node.filePath.lastIndexOf('/'))
 
@@ -224,6 +252,24 @@ export function extractFileAnnotations(
 ): void {
   const lines = source.split('\n')
   const annotationPattern = /@(\w+)\s*(?:\(([^)]*)\))?/g
+  const nodeLookup = new Map<string, string>()
+
+  const fileNodes = queries.getNodesByFile(filePath)
+  for (const n of fileNodes) {
+    nodeLookup.set(n.name, n.id)
+    const simple = n.qualifiedName.split('.').pop() || n.name
+    if (simple !== n.name) nodeLookup.set(simple, n.id)
+  }
+
+  function extractDeclName(line: string): string | null {
+    const typeMatch = line.match(/(?:class|interface|enum)\s+(\w+)/)
+    if (typeMatch) return typeMatch[1]
+    const methodMatch = line.match(/(?:\w+(?:<[^>]*>)?)\s+(\w+)\s*\(/)
+    if (methodMatch) return methodMatch[1]
+    const voidMatch = line.match(/void\s+(\w+)\s*\(/)
+    if (voidMatch) return voidMatch[1]
+    return null
+  }
 
   let m: RegExpExecArray | null
   while ((m = annotationPattern.exec(source)) !== null) {
@@ -231,16 +277,23 @@ export function extractFileAnnotations(
     const annValue = m[2]?.trim() ?? ''
     const lineNum = source.substring(0, m.index).split('\n').length + 1
 
-    for (let j = lineNum - 1; j < Math.min(lineNum + 2, lines.length); j++) {
+    for (let j = lineNum - 1; j < Math.min(lineNum + 4, lines.length); j++) {
       const declLine = lines[j]?.trim() ?? ''
       if (declLine && !declLine.startsWith('@') && !declLine.startsWith('import') && !declLine.startsWith('package')) {
-        const idMatch = declLine.match(/(?:class|interface|enum|void|\w+)\s+(\w+)/)
-        if (idMatch) {
-          const nodeCandidates = queries.searchNodes(idMatch[1], 5)
-          for (const candidate of nodeCandidates) {
-            if (candidate.filePath === filePath) {
-              queries.insertAnnotation(candidate.id, annName, annValue, lineNum, moduleId)
+        const matchedName = extractDeclName(declLine)
+        if (matchedName) {
+          let nodeId = nodeLookup.get(matchedName)
+          if (!nodeId) {
+            const nodeCandidates = queries.searchNodes(matchedName, 10)
+            for (const candidate of nodeCandidates) {
+              if (candidate.filePath === filePath) {
+                nodeId = candidate.id
+                break
+              }
             }
+          }
+          if (nodeId) {
+            queries.insertAnnotation(nodeId, annName, annValue, lineNum, moduleId)
           }
         }
         break

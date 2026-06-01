@@ -27,6 +27,10 @@ export class OutputBudget {
     return this.totalBudget <= 40
   }
 
+  shouldCollapse(): boolean {
+    return this.totalBudget >= 50
+  }
+
   getTier(): string {
     if (this.totalBudget <= 30) return 'tiny'
     if (this.totalBudget <= 40) return 'small'

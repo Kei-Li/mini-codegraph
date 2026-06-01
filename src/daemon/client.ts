@@ -2,15 +2,17 @@ import { createConnection, type Socket } from 'node:net'
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
+import { logDebug, logInfo, logWarn, logError } from '../logger.js'
 
 export interface DaemonInfo {
   port: number
   pid: number
+  version: string
   alive: boolean
 }
 
 export function getDaemonInfo(projectRoot: string): DaemonInfo | null {
-  const dataDir = join(projectRoot, '.codegraph')
+  const dataDir = join(projectRoot, '.mini-codegraph')
   const portFile = join(dataDir, 'daemon.port')
   const pidFile = join(dataDir, 'daemon.pid')
 
@@ -18,7 +20,9 @@ export function getDaemonInfo(projectRoot: string): DaemonInfo | null {
 
   try {
     const port = parseInt(readFileSync(portFile, 'utf-8').trim(), 10)
-    const pid = parseInt(readFileSync(pidFile, 'utf-8').trim(), 10)
+    const pidContent = readFileSync(pidFile, 'utf-8').trim().split('\n')
+    const pid = parseInt(pidContent[0], 10)
+    const version = pidContent[1] ?? 'unknown'
 
     let alive = false
     try {
@@ -26,7 +30,7 @@ export function getDaemonInfo(projectRoot: string): DaemonInfo | null {
       alive = true
     } catch {}
 
-    return { port, pid, alive }
+    return { port, pid, version, alive }
   } catch {
     return null
   }
@@ -34,11 +38,14 @@ export function getDaemonInfo(projectRoot: string): DaemonInfo | null {
 
 export function startDaemon(projectRoot: string): Promise<number> {
   return new Promise((resolve, reject) => {
+    const cliPath = findCliPath()
+    if (!cliPath) {
+      reject(new Error('Cannot find CLI entry point'))
+      return
+    }
+
     const child = spawn(process.execPath, [
-      join(process.cwd(), 'dist', 'cli.js'),
-      'serve',
-      '--daemon',
-      projectRoot,
+      cliPath, 'serve', '--daemon', projectRoot,
     ], {
       stdio: 'ignore',
       detached: true,
@@ -47,11 +54,10 @@ export function startDaemon(projectRoot: string): Promise<number> {
 
     child.unref()
 
-    // Wait for daemon to start and write port file
-    const dataDir = join(projectRoot, '.codegraph')
+    const dataDir = join(projectRoot, '.mini-codegraph')
     const portFile = join(dataDir, 'daemon.port')
     let attempts = 0
-    const maxAttempts = 50 // 5 seconds
+    const maxAttempts = 50
 
     const check = setInterval(() => {
       attempts++
@@ -77,10 +83,51 @@ export function connectToDaemon(port: number): Promise<Socket> {
       resolve(socket)
     })
     socket.on('error', reject)
-    socket.setTimeout(5000)
+    socket.setTimeout(10000)
     socket.on('timeout', () => {
       socket.destroy()
       reject(new Error('Connection timeout'))
     })
   })
+}
+
+export function connectToDaemonWithVersionCheck(port: number): Promise<{ socket: Socket; version: string }> {
+  return new Promise((resolve, reject) => {
+    const socket = createConnection({ host: '127.0.0.1', port }, () => {
+      const onData = (chunk: Buffer) => {
+        const text = chunk.toString()
+        const newlineIdx = text.indexOf('\n')
+        if (newlineIdx !== -1) {
+          const line = text.slice(0, newlineIdx).trim()
+          try {
+            const msg = JSON.parse(line)
+            if (msg.type === 'hello') {
+              socket.removeListener('data', onData)
+              resolve({ socket, version: msg.version ?? 'unknown' })
+              return
+            }
+          } catch {}
+        }
+      }
+      socket.on('data', onData)
+    })
+    socket.on('error', reject)
+    socket.setTimeout(10000)
+    socket.on('timeout', () => {
+      socket.destroy()
+      reject(new Error('Connection timeout'))
+    })
+  })
+}
+
+function findCliPath(): string | null {
+  const candidates = [
+    join(process.cwd(), 'dist', 'cli.js'),
+    join(__dirname, '..', '..', 'dist', 'cli.js'),
+    join(__dirname, '..', '..', '..', 'dist', 'cli.js'),
+  ]
+  for (const p of candidates) {
+    if (existsSync(p)) return p
+  }
+  return null
 }

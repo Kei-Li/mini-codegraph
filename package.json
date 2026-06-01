@@ -25,6 +25,8 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/cli.js",
+    "test": "tsc && node --test 'tests/**/*.test.mjs'",
+    "test:quick": "tsc && node --test --test-concurrency=1 'tests/**/*.test.mjs'",
     "prepublishOnly": "tsc"
   },
   "dependencies": {

@@ -1,5 +1,5 @@
 import type { QueryManager } from '../db/queries.js'
-import type { CodeGraphNode } from '../types.js'
+import type { MiniCodeGraphNode } from '../types.js'
 
 export interface SynthesizedEdge {
   source: string
@@ -32,7 +32,7 @@ function synthesizeInterfaceOverrides(
   const edges: SynthesizedEdge[] = []
   const allNodes = queries.getAllNodes()
 
-  const interfaceMethods = new Map<string, CodeGraphNode[]>()
+  const interfaceMethods = new Map<string, MiniCodeGraphNode[]>()
   for (const node of allNodes) {
     if (node.kind === 'method' && node.parentId) {
       const parent = queries.getNode(node.parentId)
@@ -44,7 +44,7 @@ function synthesizeInterfaceOverrides(
     }
   }
 
-  const classMethods = new Map<string, CodeGraphNode[]>()
+  const classMethods = new Map<string, MiniCodeGraphNode[]>()
   for (const node of allNodes) {
     if (node.kind === 'method' && node.parentId) {
       const parent = queries.getNode(node.parentId)
@@ -84,10 +84,10 @@ function synthesizeInterfaceOverrides(
 
 function findConcreteClasses(
   queries: QueryManager,
-  iface: CodeGraphNode,
+  iface: MiniCodeGraphNode,
   moduleId: string
-): CodeGraphNode[] {
-  const results: CodeGraphNode[] = []
+): MiniCodeGraphNode[] {
+  const results: MiniCodeGraphNode[] = []
   const allNodes = queries.getAllNodes()
 
   for (const node of allNodes) {
@@ -148,6 +148,60 @@ function synthesizeEventEmitterEdges(
     }
   }
 
+  const springEdges = synthesizeSpringEventEdges(queries, moduleId)
+  edges.push(...springEdges)
+
+  return edges
+}
+
+export function synthesizeSpringEventEdges(
+  queries: QueryManager,
+  moduleId: string
+): SynthesizedEdge[] {
+  const edges: SynthesizedEdge[] = []
+  const eventListeners = queries.getNodesByAnnotation('EventListener')
+  if (eventListeners.length === 0) return edges
+
+  for (const listener of eventListeners) {
+    if (listener.moduleId !== moduleId) continue
+    const annotations = queries.getAnnotationsByNode(listener.id)
+    const eventTypeAnn = annotations.find(a => a.annotationName === 'EventListener')
+    const eventType = eventTypeAnn?.value?.replace(/[{}()]/g, '').trim()
+    if (!eventType) continue
+
+    const eventClassNodes = queries.searchNodes(eventType.split('.').pop() || eventType, 5)
+    for (const ecn of eventClassNodes) {
+      if (ecn.moduleId === moduleId) {
+        edges.push({
+          source: ecn.id,
+          target: listener.id,
+          kind: 'spring_event_listener',
+          metadata: JSON.stringify({ eventType, synthesizedBy: 'springEvent' }),
+          line: listener.startLine,
+          col: listener.startColumn,
+        })
+      }
+    }
+  }
+
+  const publishMethods = queries.searchNodes('publishEvent', 100)
+    .filter(n => n.moduleId === moduleId && n.name === 'publishEvent')
+
+  for (const pm of publishMethods) {
+    const callers = queries.getCallers(pm.id)
+    for (const caller of callers) {
+      if (caller.moduleId !== moduleId) continue
+      edges.push({
+        source: caller.id,
+        target: pm.id,
+        kind: 'spring_event_publish',
+        metadata: JSON.stringify({ synthesizedBy: 'springEvent' }),
+        line: caller.startLine,
+        col: caller.startColumn,
+      })
+    }
+  }
+
   return edges
 }
 
@@ -185,8 +239,8 @@ export function synthesizeMyBatisEdges(
 
 export function synthesizeFeignClientEdges(
   queries: QueryManager,
-  feignClient: CodeGraphNode,
-  targetServiceMethods: { node: CodeGraphNode; route: string }[]
+  feignClient: MiniCodeGraphNode,
+  targetServiceMethods: { node: MiniCodeGraphNode; route: string }[]
 ): SynthesizedEdge[] {
   const edges: SynthesizedEdge[] = []
   const feignMethods = queries.getChildren(feignClient.id)

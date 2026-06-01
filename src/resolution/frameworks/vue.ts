@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { QueryManager } from '../../db/queries.js'
-import type { CodeGraphNode, UnresolvedReference, FrameworkDetectionResult } from '../../types.js'
+import type { MiniCodeGraphNode, UnresolvedReference, FrameworkDetectionResult } from '../../types.js'
 import { matchReference } from '../name-matcher.js'
 
 const VUE_COMPILER_MACROS = new Set([
@@ -58,7 +58,7 @@ export function resolveVueReference(
   ref: UnresolvedReference,
   sourceFile: string,
   moduleId: string
-): CodeGraphNode | null {
+): MiniCodeGraphNode | null {
   const refName = ref.referenceName
 
   if (VUE_COMPILER_MACROS.has(refName)) {
@@ -93,7 +93,7 @@ function resolveVueComponent(
   componentName: string,
   sourceFile: string,
   moduleId: string
-): CodeGraphNode | null {
+): MiniCodeGraphNode | null {
   const sourceDir = sourceFile.substring(0, sourceFile.lastIndexOf('/'))
 
   const sameDirComponents = queries.searchNodes(componentName, 20)
@@ -117,7 +117,7 @@ function resolveVueFileComponent(
   refName: string,
   _sourceFile: string,
   _moduleId: string
-): CodeGraphNode | null {
+): MiniCodeGraphNode | null {
   const candidates = queries.searchNodes(refName, 10)
   for (const c of candidates) {
     if (c.filePath === refName || c.filePath.endsWith(`/${refName}`)) {

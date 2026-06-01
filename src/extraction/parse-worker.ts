@@ -30,8 +30,8 @@ interface ShutdownRequest {
 
 type WorkerMessage = ParseRequest | InitRequest | ShutdownRequest
 
-let parseCount = 0
-const PARSER_RESET_INTERVAL = 250
+const parseCounts = new Map<string, number>()
+const PARSER_RESET_INTERVAL = 5000
 
 parentPort?.on('message', async (msg: WorkerMessage) => {
   if (msg.type === 'init') {
@@ -59,7 +59,9 @@ parentPort?.on('message', async (msg: WorkerMessage) => {
       return
     }
 
-    if (parseCount > 0 && parseCount % PARSER_RESET_INTERVAL === 0) {
+    const count = (parseCounts.get(msg.grammarName) ?? 0) + 1
+    parseCounts.set(msg.grammarName, count)
+    if (count % PARSER_RESET_INTERVAL === 0) {
       grammarLoader.resetParser?.(msg.grammarName)
     }
 
@@ -84,7 +86,7 @@ parentPort?.on('message', async (msg: WorkerMessage) => {
             ? parseVueFile(parser, msg.content, msg.filePath, msg.language)
             : parseTypeScriptFile(tree, msg.content, msg.filePath, msg.language)
 
-      parseCount++
+      // increment tracked via parseCounts above
 
       parentPort?.postMessage({
         type: 'parse-result',

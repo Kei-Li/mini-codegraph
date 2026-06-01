@@ -1,7 +1,8 @@
 import type { QueryManager } from '../db/queries.js'
-import type { CodeGraphNode } from '../types.js'
+import type { MiniCodeGraphNode } from '../types.js'
 import { GraphTraverser } from './traversal.js'
 import { CodeAnalyzer } from '../analysis/index.js'
+import { runQualifiedSearch, fuzzySearchFallback } from '../search/index.js'
 
 export class GraphQueryManager {
   private queries: QueryManager
@@ -18,32 +19,39 @@ export class GraphQueryManager {
     this.analyzer = new CodeAnalyzer(queries, projectRoot)
   }
 
-  search(query: string, limit = 20): { node: CodeGraphNode; snippets: string[]; score: number }[] {
-    return this.queries.searchNodesWithRank(query, limit)
+  search(query: string, limit = 20): { node: MiniCodeGraphNode; snippets: string[]; score: number }[] {
+    const allNodes = this.queries.getAllNodes()
+    const results = runQualifiedSearch(
+      query,
+      (q, l) => this.queries.searchNodesWithRank(q, l),
+      (q, l) => fuzzySearchFallback(q, allNodes, l),
+      limit
+    )
+    return results
       .map(r => ({ node: r.node, snippets: [r.node.signature, r.node.docstring].filter(Boolean), score: r.rank }))
   }
 
-  getNode(id: string): CodeGraphNode | undefined {
+  getNode(id: string): MiniCodeGraphNode | undefined {
     return this.queries.getNode(id)
   }
 
-  getCallers(nodeId: string): CodeGraphNode[] {
+  getCallers(nodeId: string): MiniCodeGraphNode[] {
     return this.queries.getCallers(nodeId)
   }
 
-  getCallees(nodeId: string): CodeGraphNode[] {
+  getCallees(nodeId: string): MiniCodeGraphNode[] {
     return this.queries.getCallees(nodeId)
   }
 
   getContext(nodeId: string): {
-    node: CodeGraphNode | undefined
-    parent: CodeGraphNode | undefined
-    children: CodeGraphNode[]
-    callers: CodeGraphNode[]
-    callees: CodeGraphNode[]
-    implementations: CodeGraphNode[]
+    node: MiniCodeGraphNode | undefined
+    parent: MiniCodeGraphNode | undefined
+    children: MiniCodeGraphNode[]
+    callers: MiniCodeGraphNode[]
+    callees: MiniCodeGraphNode[]
+    implementations: MiniCodeGraphNode[]
     annotations: { annotationName: string; value: string }[]
-    crossServiceCallees: { node: CodeGraphNode; detail: string }[]
+    crossServiceCallees: { node: MiniCodeGraphNode; detail: string }[]
   } {
     const node = this.queries.getNode(nodeId)
     if (!node) return { node: undefined, parent: undefined, children: [], callers: [], callees: [], implementations: [], annotations: [], crossServiceCallees: [] }
@@ -54,12 +62,12 @@ export class GraphQueryManager {
     const callees = this.queries.getCallees(nodeId)
     const annotations = this.queries.getAnnotationsByNode(nodeId)
 
-    let implementations: CodeGraphNode[] = []
+    let implementations: MiniCodeGraphNode[] = []
     if (['interface', 'type_alias'].includes(node.kind)) {
       implementations = this.traverser.findImplementations(node)
     }
 
-    let crossServiceCallees: { node: CodeGraphNode; detail: string }[] = []
+    let crossServiceCallees: { node: MiniCodeGraphNode; detail: string }[] = []
     if (node.kind === 'method' || node.kind === 'class') {
       crossServiceCallees = this.traverser.findCrossServiceCallees(node)
     }
@@ -67,15 +75,15 @@ export class GraphQueryManager {
     return { node, parent, children, callers, callees, implementations, annotations, crossServiceCallees }
   }
 
-  getImpact(nodeId: string, depth = 2): CodeGraphNode[] {
+  getImpact(nodeId: string, depth = 2): MiniCodeGraphNode[] {
     return Array.from(this.traverser.findImpactedNodes(nodeId, depth).values())
   }
 
-  findRelated(nodeIds: string[]): Map<string, { node: CodeGraphNode; relationships: string[] }> {
+  findRelated(nodeIds: string[]): Map<string, { node: MiniCodeGraphNode; relationships: string[] }> {
     return this.traverser.findRelated(nodeIds)
   }
 
-  findDeadCode(): CodeGraphNode[] {
+  findDeadCode(): MiniCodeGraphNode[] {
     return this.traverser.findDeadCode()
   }
 
@@ -96,13 +104,13 @@ export class GraphQueryManager {
   }
 
   getFeignClients(): {
-    feignClient: CodeGraphNode
-    feignMethods: CodeGraphNode[]
+    feignClient: MiniCodeGraphNode
+    feignMethods: MiniCodeGraphNode[]
     annotations: { annotationName: string; value: string }[]
   }[] {
     const results: {
-      feignClient: CodeGraphNode
-      feignMethods: CodeGraphNode[]
+      feignClient: MiniCodeGraphNode
+      feignMethods: MiniCodeGraphNode[]
       annotations: { annotationName: string; value: string }[]
     }[] = []
 
@@ -181,12 +189,12 @@ export class GraphQueryManager {
     return this.queries.getStats()
   }
 
-  searchModule(query: string, moduleId: string, limit = 20): { node: CodeGraphNode; snippets: string[]; score: number }[] {
+  searchModule(query: string, moduleId: string, limit = 20): { node: MiniCodeGraphNode; snippets: string[]; score: number }[] {
     return this.queries.searchNodesByModule(query, moduleId, limit)
       .map(n => ({ node: n, snippets: [n.signature, n.docstring].filter(Boolean), score: 0 }))
   }
 
-  getCyclomaticComplexity(node: CodeGraphNode): any {
+  getCyclomaticComplexity(node: MiniCodeGraphNode): any {
     return this.analyzer.computeCyclomaticComplexity(node)
   }
 
@@ -213,6 +221,10 @@ export class GraphQueryManager {
   markSyncComplete(): void {
     this.lastSyncTime = Date.now()
     this.pendingFiles.clear()
+  }
+
+  getProjectRoot(): string {
+    return this.projectRoot
   }
 
   getStalenessWarning(): string | null {
@@ -425,4 +437,823 @@ export class GraphQueryManager {
   getContextBuilder(): Promise<import('../context/index.js').ContextBuilder> {
     return import('../context/index.js').then(m => new m.ContextBuilder(this.queries, this, this.projectRoot))
   }
+
+  getFullTraces(): import('../types.js').FullTrace[] {
+    const traces: import('../types.js').FullTrace[] = []
+    const allEdges = this.queries.getAllEdges()
+    const apiEdges = allEdges.filter(e => e.kind === 'api_mapping')
+    for (const ae of apiEdges) {
+      const hops: import('../types.js').FullTraceHop[] = []
+      let meta: any = {}
+      try { meta = JSON.parse(ae.metadata ?? '{}') } catch {}
+      hops.push({ kind: 'vue_api_call', id: ae.sourceId, name: ae.sourceId.split('/').pop() ?? '', detail: `API → ${meta.path ?? ''}` })
+      const cn = this.queries.getNode(ae.targetId)
+      if (cn) {
+        hops.push({ kind: 'controller_endpoint', id: cn.id, name: cn.name, moduleId: cn.moduleId, filePath: cn.filePath, detail: `${meta.method ?? 'GET'} ${meta.path ?? ''}` })
+        const svcEdges = allEdges.filter(e => e.sourceId === cn.id && e.kind === 'calls')
+        for (const se of svcEdges) {
+          const sn = this.queries.getNode(se.targetId)
+          if (sn) hops.push({ kind: 'service_method', id: sn.id, name: sn.name, moduleId: sn.moduleId, filePath: sn.filePath, detail: `${cn.name} → ${sn.name}` })
+        }
+      }
+      if (hops.length > 1) {
+        traces.push({ id: `trace:${ae.sourceId}`, hops, entryPoint: ae.sourceId, endpointPath: meta.path ?? '', httpMethod: meta.method ?? 'GET' })
+      }
+    }
+    return traces
+  }
+
+  getFullTraceByEndpoint(path: string): import('../types.js').FullTrace | undefined {
+    return this.getFullTraces().find(t => t.endpointPath.includes(path) || path.includes(t.endpointPath))
+  }
+
+  getFullTracesByService(serviceName: string): import('../types.js').FullTrace[] {
+    return this.getFullTraces().filter(t => t.hops.some(h => h.moduleId?.toLowerCase().includes(serviceName.toLowerCase())))
+  }
+
+  getConfigBindings(): import('../types.js').ConfigPropertyBinding[] {
+    const bindings: import('../types.js').ConfigPropertyBinding[] = []
+    const edges = this.queries.getAllEdges().filter(e => e.kind === 'config_binding')
+    const seen = new Set<string>()
+    for (const e of edges) {
+      if (!seen.has(e.sourceId)) {
+        seen.add(e.sourceId)
+        try {
+          const meta = JSON.parse(e.metadata ?? '{}')
+          bindings.push({
+            configClass: e.sourceId,
+            prefix: meta.prefix ?? '',
+            filePath: '',
+            properties: [{ key: meta.key ?? '', value: meta.value ?? '', sourceFile: '', sourceLine: 0 }],
+            moduleId: '',
+          })
+        } catch {}
+      }
+    }
+    return bindings
+  }
+
+  getTxAnnotations(): import('../types.js').TransactionalInfo[] {
+    const list: import('../types.js').TransactionalInfo[] = []
+    const edges = this.queries.getAllEdges().filter(e => e.kind === 'transactional')
+    for (const e of edges) {
+      try {
+        const meta = JSON.parse(e.metadata ?? '{}')
+        list.push({
+          nodeId: e.sourceId,
+          methodName: meta.methodName ?? '',
+          className: meta.className ?? '',
+          propagation: meta.propagation ?? 'REQUIRED',
+          isolation: meta.isolation ?? 'DEFAULT',
+          timeout: meta.timeout ?? -1,
+          readOnly: meta.readOnly ?? false,
+          rollbackFor: meta.rollbackFor ?? [],
+          noRollbackFor: meta.noRollbackFor ?? [],
+          filePath: meta.filePath ?? '',
+          line: meta.line ?? 0,
+        })
+      } catch {}
+    }
+    return list
+  }
+
+  getTxBoundaryConflicts(): { outerMethod: string; innerMethod: string; outerPropagation: string; innerPropagation: string; warning: string }[] {
+    const conflicts: { outerMethod: string; innerMethod: string; outerPropagation: string; innerPropagation: string; warning: string }[] = []
+    const txEdges = this.queries.getAllEdges().filter(e => e.kind === 'tx_propagate')
+    for (const e of txEdges) {
+      try {
+        const meta = JSON.parse(e.metadata ?? '{}')
+        const on = this.queries.getNode(e.sourceId)
+        const inn = this.queries.getNode(e.targetId)
+        if (on && inn && meta.innerPropagation === 'REQUIRES_NEW') {
+          conflicts.push({ outerMethod: on.name, innerMethod: inn.name, outerPropagation: meta.callerPropagation ?? 'REQUIRED', innerPropagation: 'REQUIRES_NEW', warning: 'REQUIRES_NEW inside existing transaction: outer tx will be suspended' })
+        }
+      } catch {}
+    }
+    return conflicts
+  }
+
+  getCacheTopologies(): import('../types.js').CacheTopology[] {
+    const topologies: import('../types.js').CacheTopology[] = []
+    const edges = this.queries.getAllEdges().filter(e => e.kind === 'cache_annotation')
+    const cacheMap = new Map<string, any[]>()
+    for (const e of edges) {
+      try {
+        const meta = JSON.parse(e.metadata ?? '{}')
+        for (const name of meta.cacheNames ?? []) {
+          if (!cacheMap.has(name)) cacheMap.set(name, [])
+          cacheMap.get(name)!.push(meta)
+        }
+      } catch {}
+    }
+    for (const [cacheName, entries] of cacheMap) {
+      const services = new Set<string>()
+      for (const e of entries) if (e.moduleId) services.add(e.moduleId)
+      topologies.push({ cacheName, entries, relatedServices: Array.from(services) })
+    }
+    return topologies
+  }
+
+  getRoutingManifest(limit = 50): { path: string; method: string; handler: string; filePath: string; line: number }[] {
+    const manifest: { path: string; method: string; handler: string; filePath: string; line: number }[] = []
+    const routeAnnotations = ['GetMapping', 'PostMapping', 'PutMapping', 'DeleteMapping', 'PatchMapping', 'RequestMapping']
+
+    for (const node of this.queries.getAllNodes()) {
+      const annotations = this.queries.getAnnotationsByNode(node.id)
+      for (const a of annotations) {
+        if (routeAnnotations.includes(a.annotationName)) {
+          const method = a.annotationName === 'RequestMapping' ? 'ANY' : a.annotationName.replace('Mapping', '').toUpperCase()
+          const path = a.value.replace(/"/g, '')
+          manifest.push({
+            path, method,
+            handler: `${node.name} (${node.qualifiedName})`,
+            filePath: node.filePath,
+            line: node.startLine,
+          })
+        }
+      }
+    }
+
+    return manifest.slice(0, limit)
+  }
+
+  getLombokSynthetics(): { nodeId: string; annotation: string; field?: string }[] {
+    const results: { nodeId: string; annotation: string; field?: string }[] = []
+    const edges = this.queries.getAllEdges().filter(e => e.kind === 'lombok_synthetic')
+    for (const e of edges) {
+      try {
+        const meta = JSON.parse(e.metadata ?? '{}')
+        results.push({ nodeId: e.sourceId, annotation: meta.annotation ?? '', field: meta.field })
+      } catch {}
+    }
+    return results
+  }
+
+  getGrpcServices(): { name: string; package: string; rpcMethods: string[]; filePath: string; stubClass?: string }[] {
+    const services: { name: string; package: string; rpcMethods: string[]; filePath: string; stubClass?: string }[] = []
+    const grpcEdges = this.queries.getAllEdges().filter(e => e.kind === 'grpc_stub')
+    const stubMap = new Map<string, string>()
+    for (const e of grpcEdges) {
+      try {
+        const meta = JSON.parse(e.metadata ?? '{}')
+        stubMap.set(e.sourceId, meta.stubClass ?? '')
+      } catch {}
+    }
+
+    for (const node of this.queries.getAllNodes()) {
+      if (node.id.startsWith('grpc:') && node.kind === 'interface') {
+        const children = this.queries.getChildren(node.id)
+        const parts = node.qualifiedName.split('.')
+        services.push({
+          name: node.name,
+          package: parts.length > 1 ? parts.slice(0, -1).join('.') : '',
+          rpcMethods: children.filter(c => c.kind === 'method').map(c => c.name),
+          filePath: node.filePath,
+          stubClass: stubMap.get(node.id) || undefined,
+        })
+      }
+    }
+    return services
+  }
+
+  getMapStructMappers(): MapStructMapperSummary[] {
+    const mappers: MapStructMapperSummary[] = []
+    const annotations = new Map<string, string[]>()
+    for (const node of this.queries.getAllNodes()) {
+      if (node.kind === 'interface') {
+        const anns = this.queries.getAnnotationsByNode(node.id)
+        if (anns.some(a => a.annotationName === 'Mapper')) {
+          const methods = this.queries.getChildren(node.id).filter(c => c.kind === 'method')
+          const sourceEdges = this.queries.getAllEdges().filter(e => e.kind === 'mapstruct_source' && e.sourceId.startsWith(node.id.split(':')[0]))
+          const targetEdges = this.queries.getAllEdges().filter(e => e.kind === 'mapstruct_target' && e.sourceId.startsWith(node.id.split(':')[0]))
+          mappers.push({
+            interfaceName: node.name,
+            methods: methods.map(m => {
+              const se = sourceEdges.find(e => e.targetId === node.id && JSON.parse(e.metadata || '{}').method === m.name)
+              const te = targetEdges.find(e => e.sourceId === node.id && JSON.parse(e.metadata || '{}').method === m.name)
+              const fieldMappings: { source: string; target: string }[] = []
+              const mappingAnns = this.queries.getAnnotationsByNode(m.id)
+                .filter(a => a.annotationName === 'Mapping')
+              for (const ma of mappingAnns) {
+                const parts = ma.value.split('→')
+                if (parts.length === 2) fieldMappings.push({ source: parts[0], target: parts[1] })
+              }
+              return {
+                methodName: m.name,
+                sourceType: se ? JSON.parse(se.metadata || '{}').sourceType ?? '' : '',
+                targetType: te ? JSON.parse(te.metadata || '{}').targetType ?? '' : '',
+                fieldMappings,
+              }
+            }),
+          })
+        }
+      }
+    }
+    return mappers
+  }
+
+  getAutoConfigurations(): AutoConfigSummary[] {
+    const configs: AutoConfigSummary[] = []
+    for (const node of this.queries.getAllNodes()) {
+      const anns = this.queries.getAnnotationsByNode(node.id)
+      const conditionalAnn = anns.find(a => a.annotationName === 'ConditionalConfig')
+      if (!conditionalAnn) continue
+
+      const conditions: ConditionInfo[] = []
+      try {
+        const parsed = JSON.parse(conditionalAnn.value)
+        if (Array.isArray(parsed)) {
+          for (const c of parsed) {
+            conditions.push({ type: c.type, value: c.value, matchIfMissing: c.matchIfMissing ?? false })
+          }
+        }
+      } catch {}
+
+      const afterEdges = this.queries.getAllEdges().filter(e => e.sourceId === node.id && e.kind === 'auto_configure_after')
+      const beforeEdges = this.queries.getAllEdges().filter(e => e.sourceId === node.id && e.kind === 'auto_configure_before')
+
+      configs.push({
+        className: node.name,
+        filePath: node.filePath,
+        conditions,
+        autoConfigureAfter: afterEdges.map(e => e.targetId.split(':').pop() || ''),
+        autoConfigureBefore: beforeEdges.map(e => e.targetId.split(':').pop() || ''),
+      })
+    }
+    return configs
+  }
+
+  getMavenModules(): MavenModuleSummary[] {
+    const modules: MavenModuleSummary[] = []
+    for (const node of this.queries.getAllNodes()) {
+      if (node.kind === 'module' && node.id.startsWith('pom:')) {
+        const depEdges = this.queries.getAllEdges().filter(e => e.sourceId === node.id && e.kind === 'maven_depends_on')
+        const submoduleEdges = this.queries.getAllEdges().filter(e => e.sourceId === node.id && e.kind === 'maven_submodule')
+        modules.push({
+          artifactId: node.name,
+          qualifiedName: node.qualifiedName,
+          dependencies: depEdges.map(e => {
+            const meta = JSON.parse(e.metadata || '{}')
+            return {
+              groupId: meta.groupId || '',
+              artifactId: meta.artifactId || '',
+              version: meta.version || '',
+              scope: meta.scope || 'compile',
+              optional: meta.optional || false,
+            }
+          }),
+          submodules: submoduleEdges.map(e => e.targetId.split(':').pop() || ''),
+        })
+      }
+    }
+    return modules
+  }
+
+  getMavenScopeConflicts(): MavenScopeConflict[] {
+    const depToScopes = new Map<string, { scopes: Set<string>; modules: Set<string> }>()
+    for (const node of this.queries.getAllNodes()) {
+      if (node.kind === 'module' && node.id.startsWith('pom:')) {
+        const deps = this.queries.getAllEdges().filter(e => e.sourceId === node.id && e.kind === 'maven_depends_on')
+        for (const d of deps) {
+          const meta = JSON.parse(d.metadata || '{}')
+          const key = `${meta.groupId}:${meta.artifactId}`
+          if (!depToScopes.has(key)) depToScopes.set(key, { scopes: new Set(), modules: new Set() })
+          const entry = depToScopes.get(key)!
+          entry.scopes.add(meta.scope || 'compile')
+          entry.modules.add(node.name)
+        }
+      }
+    }
+    return [...depToScopes.entries()]
+      .filter(([_, v]) => v.scopes.size > 1)
+      .map(([k, v]) => ({ artifactKey: k, scopes: [...v.scopes], modules: [...v.modules] }))
+  }
+
+  getGradleModules(): GradleModuleSummary[] {
+    const modules: GradleModuleSummary[] = []
+    for (const node of this.queries.getAllNodes()) {
+      if (node.kind === 'module' && node.id.startsWith('gradle:')) {
+        const depEdges = this.queries.getAllEdges().filter(e => e.sourceId === node.id && e.kind === 'gradle_depends_on')
+        const subEdges = this.queries.getAllEdges().filter(e => e.sourceId === node.id && e.kind === 'gradle_submodule')
+        modules.push({
+          name: node.name,
+          dependencies: depEdges.map(e => {
+            const meta = JSON.parse(e.metadata || '{}')
+            return { group: meta.group || '', artifact: meta.artifact || '', version: meta.version || '', configuration: meta.configuration || 'implementation', isProject: meta.isProject || false }
+          }),
+          submodules: subEdges.map(e => {
+            const meta = JSON.parse(e.metadata || '{}')
+            return { name: e.targetId.split(':').pop() || '', path: meta.path || '' }
+          }),
+        })
+      }
+    }
+    return modules
+  }
+
+  getCloudConfigs(): CloudConfigSummary[] {
+    const configs: CloudConfigSummary[] = []
+    for (const node of this.queries.getAllNodes()) {
+      const anns = this.queries.getAnnotationsByNode(node.id)
+      const ccAnn = anns.find(a => a.annotationName === 'CloudConfigRef')
+      if (!ccAnn) continue
+      try {
+        const parsed = JSON.parse(ccAnn.value)
+        configs.push({ className: node.name, filePath: node.filePath, refreshScope: parsed.refreshScope, configKey: parsed.configKey })
+      } catch {}
+    }
+    return configs
+  }
+
+  getLoadBalancerClients(): LoadBalancerClientSummary[] {
+    const clients: LoadBalancerClientSummary[] = []
+    for (const node of this.queries.getAllNodes()) {
+      const anns = this.queries.getAnnotationsByNode(node.id)
+      const lbAnn = anns.find(a => a.annotationName === 'LoadBalancedClient')
+      if (!lbAnn) continue
+      try {
+        const parsed = JSON.parse(lbAnn.value)
+        clients.push({ className: node.parentId ? (this.queries.getNode(node.parentId)?.name || '') : '', fieldName: parsed.fieldName, serviceName: parsed.serviceName })
+      } catch {}
+    }
+    return clients
+  }
+
+  getLoadBalancerUris(): LbUriSummary[] {
+    const results: LbUriSummary[] = []
+    const allEdges = this.queries.getAllEdges()
+    for (const e of allEdges) {
+      if (e.kind === 'gateway_route') {
+        try {
+          const meta = JSON.parse(e.metadata || '{}')
+          if (meta.uri?.startsWith('lb://')) results.push({ uri: meta.uri, targetService: meta.uri.replace('lb://', '') })
+        } catch {}
+      }
+    }
+    const feignNodes = this.queries.getNodesByAnnotation('FeignClient')
+    for (const fn of feignNodes) {
+      const anns = this.queries.getAnnotationsByNode(fn.id)
+      for (const a of anns) {
+        if (a.annotationName === 'FeignClient') {
+          const nameMatch = a.value.match(/name\s*=\s*["'](\w[\w-]*)["']/)
+          if (nameMatch && !a.value.includes('url=')) {
+            results.push({ uri: `lb://${nameMatch[1]}`, targetService: nameMatch[1] })
+          }
+        }
+      }
+    }
+    return results
+  }
+
+  getGraphQLEndpoints(): GraphQLEndpointSummary[] {
+    const endpoints: GraphQLEndpointSummary[] = []
+    const allEdges = this.queries.getAllEdges().filter(e => e.kind === 'graphql_handler')
+    for (const e of allEdges) {
+      try {
+        const meta = JSON.parse(e.metadata || '{}')
+        const target = this.queries.getNode(e.targetId)
+        endpoints.push({
+          className: this.queries.getNode(e.sourceId)?.name || '',
+          methodName: target?.name || '',
+          field: meta.field || '',
+          returnType: meta.returnType || '',
+          kind: meta.kind || 'query',
+        })
+      } catch {}
+    }
+    return endpoints
+  }
+
+  getWebSocketEndpoints(): WebSocketEndpointSummary[] {
+    const endpoints: WebSocketEndpointSummary[] = []
+    const allEdges = this.queries.getAllEdges().filter(e => e.kind === 'websocket_handler')
+    for (const e of allEdges) {
+      try {
+        const meta = JSON.parse(e.metadata || '{}')
+        const target = this.queries.getNode(e.targetId)
+        endpoints.push({
+          className: this.queries.getNode(e.sourceId)?.name || '',
+          methodName: target?.name || '',
+          destination: meta.destination || '',
+          kind: meta.kind || 'message_mapping',
+        })
+      } catch {}
+    }
+    return endpoints
+  }
+
+  getTestAnnotations(): TestAnnotationSummary[] {
+    const tests: TestAnnotationSummary[] = []
+    const allEdges = this.queries.getAllEdges().filter(e => e.kind === 'mock_replaces')
+    const mockMap = new Map<string, string[]>()
+    for (const e of allEdges) {
+      if (!mockMap.has(e.sourceId)) mockMap.set(e.sourceId, [])
+      const target = this.queries.getNode(e.targetId)
+      if (target) mockMap.get(e.sourceId)!.push(target.name)
+    }
+
+    for (const [nodeId, mocks] of mockMap) {
+      const node = this.queries.getNode(nodeId)
+      if (!node) continue
+      const anns = this.queries.getAnnotationsByNode(nodeId)
+      for (const a of anns) {
+        if (['SpringBootTest', 'WebMvcTest', 'DataJpaTest'].includes(a.annotationName)) {
+          tests.push({ className: node.name, filePath: node.filePath, annotation: a.annotationName, mockBeans: mocks })
+        }
+      }
+    }
+    return tests
+  }
+
+  getAsyncMethods(): AsyncMethodSummary[] {
+    const methods: AsyncMethodSummary[] = []
+    const allEdges = this.queries.getAllEdges().filter(e => e.kind === 'async_method' || e.kind === 'scheduled_method')
+    for (const e of allEdges) {
+      try {
+        const meta = JSON.parse(e.metadata || '{}')
+        const target = this.queries.getNode(e.targetId)
+        methods.push({
+          className: this.queries.getNode(e.sourceId)?.name || '',
+          methodName: target?.name || '',
+          kind: e.kind === 'async_method' ? 'async' : 'scheduled',
+          cron: meta.cron,
+          fixedRate: meta.fixedRate,
+          fixedDelay: meta.fixedDelay,
+          executor: meta.executor,
+        })
+      } catch {}
+    }
+    return methods
+  }
+
+  getAspectAdvices(): AspectAdviceSummary[] {
+    const advices: AspectAdviceSummary[] = []
+    for (const e of this.queries.getAllEdges()) {
+      if (!e.kind.startsWith('aspect_')) continue
+      const source = this.queries.getNode(e.sourceId)
+      if (!source) continue
+      advices.push({
+        aspectClass: source.name,
+        filePath: source.filePath,
+        adviceType: e.kind.replace('aspect_', ''),
+        pointcut: (JSON.parse(e.metadata || '{}')).pointcut || '',
+      })
+    }
+    return advices
+  }
+
+  getSecurityFilterRules(): SecurityFilterRuleSummary[] {
+    const rules: SecurityFilterRuleSummary[] = []
+    for (const e of this.queries.getAllEdges()) {
+      if (!e.kind.startsWith('security_filter_')) continue
+      const source = this.queries.getNode(e.sourceId)
+      try {
+        const meta = JSON.parse(e.metadata || '{}')
+        rules.push({
+          classFile: source?.filePath || '',
+          urlPatterns: meta.urlPatterns || [],
+          method: e.kind.replace('security_filter_', ''),
+          roles: meta.roles || [],
+          expression: meta.expression || '',
+        })
+      } catch {}
+    }
+    return rules
+  }
+
+  getK8sServiceDetails(): K8sServiceDetailSummary[] {
+    return this.queries.getAllNodes()
+      .filter(n => {
+        const anns = this.queries.getAnnotationsByNode(n.id)
+        return anns.some(a => a.annotationName === 'K8sService')
+      })
+      .map(n => {
+        const ann = this.queries.getAnnotationsByNode(n.id).find(a => a.annotationName === 'K8sService')
+        const parsed = ann ? JSON.parse(ann.value) : {}
+        return { serviceName: n.name.replace('k8s:Service:', ''), type: parsed.type || 'ClusterIP', ports: parsed.ports || [] }
+      })
+  }
+
+  getK8sIngressDetails(): K8sIngressDetailSummary[] {
+    const ingresses: K8sIngressDetailSummary[] = []
+    for (const n of this.queries.getAllNodes()) {
+      if (!n.id.startsWith('k8s:Ingress:')) continue
+      const anns = this.queries.getAnnotationsByNode(n.id)
+      const pathAnns = anns.filter(a => a.annotationName === 'IngressPath')
+      const tlsAnns = anns.filter(a => a.annotationName === 'IngressTLS')
+      ingresses.push({
+        name: n.name,
+        host: n.qualifiedName.replace('ingress:', ''),
+        paths: pathAnns.map(a => JSON.parse(a.value)),
+        tlsHosts: tlsAnns.map(a => JSON.parse(a.value).host),
+      })
+    }
+    return ingresses
+  }
+
+  getK8sNetworkPolicies(): K8sNetPolSummary[] {
+    const policies: K8sNetPolSummary[] = []
+    for (const n of this.queries.getAllNodes()) {
+      const anns = this.queries.getAnnotationsByNode(n.id)
+      const npAnn = anns.find(a => a.annotationName === 'K8sNetworkPolicy')
+      if (!npAnn) continue
+      try {
+        const parsed = JSON.parse(npAnn.value)
+        policies.push({
+          name: n.name.replace('k8s:NetworkPolicy:', ''),
+          policyTypes: parsed.policyTypes || [],
+          ingressRuleCount: parsed.ingressRules || 0,
+        })
+      } catch {}
+    }
+    return policies
+  }
+
+  getControllerAdvices(): ControllerAdviceSummary[] {
+    const advices: ControllerAdviceSummary[] = []
+    for (const n of this.queries.getAllNodes()) {
+      const anns = this.queries.getAnnotationsByNode(n.id)
+      const caAnn = anns.find(a => a.annotationName === 'ControllerAdvice')
+      if (!caAnn) continue
+      try {
+        const parsed = JSON.parse(caAnn.value)
+        advices.push({
+          className: n.name,
+          basePackages: parsed.basePackages || [],
+          assignableTypes: parsed.assignableTypes || [],
+          annotations: parsed.annotations || [],
+        })
+      } catch {}
+    }
+    return advices
+  }
+
+  getInterceptors(): InterceptorSummary[] {
+    const interceptors: InterceptorSummary[] = []
+    for (const n of this.queries.getAllNodes()) {
+      const anns = this.queries.getAnnotationsByNode(n.id)
+      const iAnn = anns.find(a => a.annotationName === 'Interceptor')
+      if (!iAnn) continue
+      try {
+        const parsed = JSON.parse(iAnn.value)
+        interceptors.push({
+          classFile: n.filePath,
+          className: n.name,
+          type: parsed.type || 'HandlerInterceptor',
+          urlPatterns: parsed.urlPatterns || ['/*'],
+        })
+      } catch {}
+    }
+    return interceptors
+  }
+
+  getStreamFunctions(): StreamFunctionSummary[] {
+    const funcs: StreamFunctionSummary[] = []
+    for (const e of this.queries.getAllEdges()) {
+      if (e.kind !== 'stream_function') continue
+      const target = this.queries.getNode(e.targetId)
+      try {
+        const meta = JSON.parse(e.metadata || '{}')
+        funcs.push({
+          className: this.queries.getNode(e.sourceId)?.name || '',
+          beanMethod: target?.name || '',
+          functionType: meta.type || 'Function',
+          inputType: meta.input || '',
+          outputType: meta.output || '',
+          bindingName: meta.binding || '',
+        })
+      } catch {}
+    }
+    return funcs
+  }
+
+  getJpaCustomQueries(): JpaQuerySummary[] {
+    const queries: JpaQuerySummary[] = []
+    for (const e of this.queries.getAllEdges()) {
+      if (e.kind !== 'jpa_query') continue
+      const target = this.queries.getNode(e.targetId)
+      try {
+        const meta = JSON.parse(e.metadata || '{}')
+        queries.push({
+          repositoryClass: this.queries.getNode(e.sourceId)?.name || '',
+          methodName: target?.name || '',
+          query: meta.query || '',
+          nativeQuery: meta.native || false,
+          modification: meta.modification || false,
+        })
+      } catch {}
+    }
+    return queries
+  }
+
+  getJpaProcedures(): JpaProcedureSummary[] {
+    const procs: JpaProcedureSummary[] = []
+    for (const n of this.queries.getAllNodes()) {
+      const anns = this.queries.getAnnotationsByNode(n.id)
+      const pAnn = anns.find(a => a.annotationName === 'JpaProcedure')
+      if (!pAnn) continue
+      try {
+        const parsed = JSON.parse(pAnn.value)
+        procs.push({
+          repositoryClass: n.filePath.split('/').pop()?.replace('.java', '') || '',
+          procedureName: parsed.procedureName || '',
+          outputType: parsed.outputType || '',
+        })
+      } catch {}
+    }
+    return procs
+  }
+
+  getProfileAnnotations(): ProfileSummary[] {
+    const profiles: ProfileSummary[] = []
+    for (const n of this.queries.getAllNodes()) {
+      const anns = this.queries.getAnnotationsByNode(n.id)
+      const pAnn = anns.find(a => a.annotationName === 'Profile')
+      if (!pAnn) continue
+      try {
+        profiles.push({
+          className: n.name,
+          filePath: n.filePath,
+          profiles: JSON.parse(pAnn.value),
+        })
+      } catch {}
+    }
+    return profiles
+  }
+}
+
+interface AspectAdviceSummary {
+  aspectClass: string
+  filePath: string
+  adviceType: string
+  pointcut: string
+}
+
+interface SecurityFilterRuleSummary {
+  classFile: string
+  urlPatterns: string[]
+  method: string
+  roles: string[]
+  expression: string
+}
+
+interface K8sServiceDetailSummary {
+  serviceName: string
+  type: string
+  ports: { port: number; targetPort: number | string; protocol: string; name: string }[]
+}
+
+interface K8sIngressDetailSummary {
+  name: string
+  host: string
+  paths: { host: string; path: string; serviceName: string; servicePort: number | string }[]
+  tlsHosts: string[]
+}
+
+interface K8sNetPolSummary {
+  name: string
+  policyTypes: string[]
+  ingressRuleCount: number
+}
+
+interface ControllerAdviceSummary {
+  className: string
+  basePackages: string[]
+  assignableTypes: string[]
+  annotations: string[]
+}
+
+interface InterceptorSummary {
+  classFile: string
+  className: string
+  type: string
+  urlPatterns: string[]
+}
+
+interface StreamFunctionSummary {
+  className: string
+  beanMethod: string
+  functionType: string
+  inputType: string
+  outputType: string
+  bindingName: string
+}
+
+interface JpaQuerySummary {
+  repositoryClass: string
+  methodName: string
+  query: string
+  nativeQuery: boolean
+  modification: boolean
+}
+
+interface JpaProcedureSummary {
+  repositoryClass: string
+  procedureName: string
+  outputType: string
+}
+
+interface ProfileSummary {
+  className: string
+  filePath: string
+  profiles: string[]
+}
+
+interface MapStructMapperSummary {
+  interfaceName: string
+  methods: {
+    methodName: string
+    sourceType: string
+    targetType: string
+    fieldMappings: { source: string; target: string }[]
+  }[]
+}
+
+interface AutoConfigSummary {
+  className: string
+  filePath: string
+  conditions: ConditionInfo[]
+  autoConfigureAfter: string[]
+  autoConfigureBefore: string[]
+}
+
+interface ConditionInfo {
+  type: string
+  value: string
+  matchIfMissing: boolean
+}
+
+interface MavenModuleSummary {
+  artifactId: string
+  qualifiedName: string
+  dependencies: {
+    groupId: string
+    artifactId: string
+    version: string
+    scope: string
+    optional: boolean
+  }[]
+  submodules: string[]
+}
+
+interface MavenScopeConflict {
+  artifactKey: string
+  scopes: string[]
+  modules: string[]
+}
+
+interface GradleModuleSummary {
+  name: string
+  dependencies: { group: string; artifact: string; version: string; configuration: string; isProject: boolean }[]
+  submodules: { name: string; path: string }[]
+}
+
+interface CloudConfigSummary {
+  className: string
+  filePath: string
+  refreshScope: boolean
+  configKey?: string
+}
+
+interface LoadBalancerClientSummary {
+  className: string
+  fieldName: string
+  serviceName?: string
+}
+
+interface LbUriSummary {
+  uri: string
+  targetService: string
+}
+
+interface GraphQLEndpointSummary {
+  className: string
+  methodName: string
+  field: string
+  returnType: string
+  kind: string
+}
+
+interface WebSocketEndpointSummary {
+  className: string
+  methodName: string
+  destination: string
+  kind: string
+}
+
+interface TestAnnotationSummary {
+  className: string
+  filePath: string
+  annotation: string
+  mockBeans: string[]
+}
+
+interface AsyncMethodSummary {
+  className: string
+  methodName: string
+  kind: 'async' | 'scheduled'
+  cron?: string
+  fixedRate?: number
+  fixedDelay?: number
+  executor?: string
 }

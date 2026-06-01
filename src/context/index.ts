@@ -2,9 +2,11 @@ import { readFileSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import type { QueryManager } from '../db/queries.js'
 import type { GraphQueryManager } from '../graph/queries.js'
-import type { CodeGraphNode } from '../types.js'
+import type { MiniCodeGraphNode } from '../types.js'
 import { OutputBudget, classifyFilePath } from './budget.js'
 import { formatContextAsMarkdown } from './formatter.js'
+import { collapsePolymorphicSiblings, formatPolymorphGroup, type CollapsedGroup } from './polymorph.js'
+import { computePathRelevance } from '../generated.js'
 
 type QM = QueryManager
 
@@ -24,6 +26,7 @@ export interface ContextSymbol {
   callees: { name: string; filePath: string }[]
   implementations: { name: string; filePath: string }[]
   relatedRoutes?: { path: string; method: string }[]
+  collapsedSiblings?: { name: string; filePath: string }[]
 }
 
 export class ContextBuilder {
@@ -48,6 +51,8 @@ export class ContextBuilder {
     symbols: ContextSymbol[]
     stats: { totalFiles: number; modules: number; nodes: number; edges: number }
     routes?: { path: string; method: string; handler: string }[]
+    collapseNotes?: string[]
+    _session?: { budget: string; projectFiles: number; sufficient: boolean; suggestion: string }
   }> {
     const stats = this.queries.getStats()
     const allFiles = this.queries.getAllFiles()
@@ -56,7 +61,7 @@ export class ContextBuilder {
     const searchTerms = this.extractSearchTerms(task)
 
     // Step 2: FTS5 full-text search for each term
-    const candidates = new Map<string, { node: CodeGraphNode; rank: number }>()
+    const candidates = new Map<string, { node: MiniCodeGraphNode; rank: number }>()
     for (const term of searchTerms.slice(0, 5)) {
       const results = this.queries.searchNodesWithRank(term, 10)
       for (const r of results) {
@@ -101,8 +106,31 @@ export class ContextBuilder {
     // Step 11: Non-production file cap
     const finalNodes = this.applyNonProductionCap(capped)
 
+    // Step 11.5: Polymorphic sibling collapsing (for large projects)
+    let collapseNotes: string[] = []
+    const collapsedOrNodes = this.budget.shouldCollapse()
+      ? collapsePolymorphicSiblings(finalNodes, this.queries, 3)
+      : finalNodes
+
     // Step 12: Code block extraction
-    const symbols = await this.extractCodeBlocks(finalNodes)
+    const symbols = await this.extractCodeBlocks(
+      collapsedOrNodes.filter((n): n is MiniCodeGraphNode => !('collapsedCount' in n))
+    )
+
+    // Step 12.5: Append collapse info as context notes
+    const collapsedGroups = collapsedOrNodes
+      .filter((n): n is CollapsedGroup => 'collapsedCount' in n)
+    collapseNotes = collapsedGroups.map(g => formatPolymorphGroup(g))
+
+    // Attach collapsed siblings to their representative symbols
+    for (const group of collapsedGroups) {
+      const sym = symbols.find(s => s.id === group.representative.id)
+      if (sym) {
+        sym.collapsedSiblings = group.siblings.filter(
+          s => s.name !== group.representative.name || s.filePath !== group.representative.filePath
+        )
+      }
+    }
 
     // Step 13: Co-location boosting + core-directory boosting (sorting)
     const dominantFile = this.findDominantFile(symbols)
@@ -142,6 +170,13 @@ export class ContextBuilder {
         edges: stats.edges,
       },
       routes,
+      collapseNotes: collapseNotes.length > 0 ? collapseNotes : undefined,
+      _session: {
+        budget: this.budget.getTier(),
+        projectFiles: allFiles.length,
+        sufficient: this.budget.isSufficientForRouting(),
+        suggestion: 'Use Grep/Glob/Bash tools for further exploration beyond this context.',
+      },
     }
   }
 
@@ -153,7 +188,7 @@ export class ContextBuilder {
     return terms
   }
 
-  private addPatternMatches(task: string, candidates: Map<string, { node: CodeGraphNode; rank: number }>): void {
+  private addPatternMatches(task: string, candidates: Map<string, { node: MiniCodeGraphNode; rank: number }>): void {
     const patterns = task.match(/[A-Z][a-z]+(?:[A-Z][a-z]+)*/g)
     if (!patterns) return
     for (const p of patterns) {
@@ -164,7 +199,7 @@ export class ContextBuilder {
     }
   }
 
-  private addDefinitionSearches(task: string, candidates: Map<string, { node: CodeGraphNode; rank: number }>): void {
+  private addDefinitionSearches(task: string, candidates: Map<string, { node: MiniCodeGraphNode; rank: number }>): void {
     const prefixes = ['class ', 'interface ', 'struct ', 'trait ', 'enum ', 'function ', 'type ']
     for (const prefix of prefixes) {
       const match = task.match(new RegExp(`${prefix}(\\w+)`, 'i'))
@@ -177,8 +212,8 @@ export class ContextBuilder {
     }
   }
 
-  private expandGraph(nodes: CodeGraphNode[], terms: string[]): CodeGraphNode[] {
-    const expanded = new Map<string, CodeGraphNode>()
+  private expandGraph(nodes: MiniCodeGraphNode[], terms: string[]): MiniCodeGraphNode[] {
+    const expanded = new Map<string, MiniCodeGraphNode>()
     for (const n of nodes) expanded.set(n.id, n)
 
     for (const n of nodes) {
@@ -200,8 +235,8 @@ export class ContextBuilder {
     return Array.from(expanded.values())
   }
 
-  private expandTypeHierarchy(nodes: CodeGraphNode[]): CodeGraphNode[] {
-    const result = new Map<string, CodeGraphNode>()
+  private expandTypeHierarchy(nodes: MiniCodeGraphNode[]): MiniCodeGraphNode[] {
+    const result = new Map<string, MiniCodeGraphNode>()
     for (const n of nodes) result.set(n.id, n)
 
     for (const n of nodes) {
@@ -224,10 +259,10 @@ export class ContextBuilder {
     return Array.from(result.values())
   }
 
-  private recoverEdges(nodes: CodeGraphNode[]): CodeGraphNode[] {
+  private recoverEdges(nodes: MiniCodeGraphNode[]): MiniCodeGraphNode[] {
     const nodeIds = new Set(nodes.map(n => n.id))
     const allEdges = this.queries.getAllEdges()
-    const recovered = new Map<string, CodeGraphNode>()
+    const recovered = new Map<string, MiniCodeGraphNode>()
 
     for (const n of nodes) recovered.set(n.id, n)
 
@@ -249,14 +284,14 @@ export class ContextBuilder {
     return Array.from(recovered.values()).slice(0, this.budget.totalBudget)
   }
 
-  private applyDiversityCap(nodes: CodeGraphNode[]): CodeGraphNode[] {
-    const perFile = new Map<string, CodeGraphNode[]>()
+  private applyDiversityCap(nodes: MiniCodeGraphNode[]): MiniCodeGraphNode[] {
+    const perFile = new Map<string, MiniCodeGraphNode[]>()
     for (const n of nodes) {
       if (!perFile.has(n.filePath)) perFile.set(n.filePath, [])
       perFile.get(n.filePath)!.push(n)
     }
 
-    const result: CodeGraphNode[] = []
+    const result: MiniCodeGraphNode[] = []
     for (const [, fileNodes] of perFile) {
       const capped = fileNodes.slice(0, this.budget.perFileCap)
       result.push(...capped)
@@ -266,9 +301,9 @@ export class ContextBuilder {
     return result
   }
 
-  private applyNonProductionCap(nodes: CodeGraphNode[]): CodeGraphNode[] {
+  private applyNonProductionCap(nodes: MiniCodeGraphNode[]): MiniCodeGraphNode[] {
     let nonProdCount = 0
-    const result: CodeGraphNode[] = []
+    const result: MiniCodeGraphNode[] = []
     for (const n of nodes) {
       const classification = classifyFilePath(n.filePath)
       if (classification !== 'production') {
@@ -280,7 +315,7 @@ export class ContextBuilder {
     return result
   }
 
-  private async extractCodeBlocks(nodes: CodeGraphNode[]): Promise<ContextSymbol[]> {
+  private async extractCodeBlocks(nodes: MiniCodeGraphNode[]): Promise<ContextSymbol[]> {
     const result: ContextSymbol[] = []
     for (const n of nodes) {
       let code = ''

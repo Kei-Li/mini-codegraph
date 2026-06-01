@@ -8,10 +8,10 @@ export interface ToolDefinition {
   handler: (args: Record<string, any>, graph: GraphQueryManager) => Promise<any>
 }
 
-export function createTools(graph: GraphQueryManager): ToolDefinition[] {
+export function createTools(graph: GraphQueryManager, _getPendingFiles?: () => { path: string; firstSeenMs: number; lastSeenMs: number; indexing: boolean }[]): ToolDefinition[] {
   return [
     {
-      name: 'codegraph_search',
+      name: 'mini_codegraph_search',
       description: 'Search for symbols by name across the codebase. Returns matching nodes with their locations and snippets.',
       inputSchema: {
         type: 'object',
@@ -25,37 +25,27 @@ export function createTools(graph: GraphQueryManager): ToolDefinition[] {
       handler: async (args) => {
         const { query, kind, limit = 10 } = args
         const results = graph.search(query, limit)
+        const mapResult = (r: typeof results[number]) => ({
+          id: r.node.id,
+          name: r.node.name,
+          kind: r.node.kind,
+          qualifiedName: r.node.qualifiedName,
+          filePath: r.node.filePath,
+          lines: `${r.node.startLine}-${r.node.endLine}`,
+          snippet: r.snippets.slice(0, 5).join('\n'),
+        })
         if (kind) {
           const { filterNodesByKind } = await import('../search/index.js')
+          const filtered = filterNodesByKind(results.map(r => r.node) as { kind: string }[], kind) as typeof results[number]['node'][]
           return {
-            results: filterNodesByKind(
-              results.map(r => r.node),
-              kind
-            ).map(n => ({
-              id: n.id,
-              name: n.name,
-              kind: n.kind,
-              qualifiedName: n.qualifiedName,
-              filePath: n.filePath,
-              lines: `${n.startLine}-${n.endLine}`,
-            })),
+            results: results.filter(r => filtered.includes(r.node)).map(mapResult),
           }
         }
-        return {
-          results: results.map(r => ({
-            id: r.node.id,
-            name: r.node.name,
-            kind: r.node.kind,
-            qualifiedName: r.node.qualifiedName,
-            filePath: r.node.filePath,
-            lines: `${r.node.startLine}-${r.node.endLine}`,
-            snippet: r.snippets.slice(0, 5).join('\n'),
-          })),
-        }
+        return { results: results.map(mapResult) }
       },
     },
     {
-      name: 'codegraph_context',
+      name: 'mini_codegraph_context',
       description: 'Build comprehensive context for a task — searches for relevant symbols, retrieves their definitions and relationships. Returns code snippets, callers, callees, and file locations.',
       inputSchema: {
         type: 'object',
@@ -103,7 +93,7 @@ export function createTools(graph: GraphQueryManager): ToolDefinition[] {
       },
     },
     {
-      name: 'codegraph_trace',
+      name: 'mini_codegraph_trace',
       description: 'Find the call path between two symbols — how does <from> reach <to>?',
       inputSchema: {
         type: 'object',
@@ -142,7 +132,7 @@ export function createTools(graph: GraphQueryManager): ToolDefinition[] {
       },
     },
     {
-      name: 'codegraph_callers',
+      name: 'mini_codegraph_callers',
       description: 'Find all functions/methods that call a specific symbol.',
       inputSchema: {
         type: 'object',
@@ -170,7 +160,7 @@ export function createTools(graph: GraphQueryManager): ToolDefinition[] {
       },
     },
     {
-      name: 'codegraph_callees',
+      name: 'mini_codegraph_callees',
       description: 'Find all functions/methods that a specific symbol calls.',
       inputSchema: {
         type: 'object',
@@ -198,7 +188,7 @@ export function createTools(graph: GraphQueryManager): ToolDefinition[] {
       },
     },
     {
-      name: 'codegraph_node',
+      name: 'mini_codegraph_node',
       description: 'Get detailed information about a specific symbol, including its source code.',
       inputSchema: {
         type: 'object',
@@ -228,7 +218,7 @@ export function createTools(graph: GraphQueryManager): ToolDefinition[] {
       },
     },
     {
-      name: 'codegraph_impact',
+      name: 'mini_codegraph_impact',
       description: 'Analyze what code is affected by changing a symbol. Returns callers and transitive dependencies.',
       inputSchema: {
         type: 'object',
@@ -256,7 +246,7 @@ export function createTools(graph: GraphQueryManager): ToolDefinition[] {
       },
     },
     {
-      name: 'codegraph_files',
+      name: 'mini_codegraph_files',
       description: 'List all indexed files in the project, optionally filtered by glob pattern.',
       inputSchema: {
         type: 'object',
@@ -274,7 +264,7 @@ export function createTools(graph: GraphQueryManager): ToolDefinition[] {
       },
     },
     {
-      name: 'codegraph_status',
+      name: 'mini_codegraph_status',
       description: 'Show index health and statistics: number of files, nodes, and edges.',
       inputSchema: {
         type: 'object',
@@ -285,7 +275,7 @@ export function createTools(graph: GraphQueryManager): ToolDefinition[] {
       },
     },
     {
-      name: 'codegraph_explore',
+      name: 'mini_codegraph_explore',
       description: 'Return source for several related symbols grouped by file, plus a relationship map, in one call.',
       inputSchema: {
         type: 'object',
@@ -331,7 +321,7 @@ export function createTools(graph: GraphQueryManager): ToolDefinition[] {
       },
     },
     {
-      name: 'codegraph_architecture',
+      name: 'mini_codegraph_architecture',
       description: 'Show the microservice architecture: modules, their dependencies (FeignClient calls), and entry points (REST endpoints).',
       inputSchema: {
         type: 'object',
@@ -350,7 +340,7 @@ export function createTools(graph: GraphQueryManager): ToolDefinition[] {
       },
     },
     {
-      name: 'codegraph_feign',
+      name: 'mini_codegraph_feign',
       description: 'List all FeignClient interfaces and their microservice targets.',
       inputSchema: {
         type: 'object',
@@ -376,7 +366,7 @@ export function createTools(graph: GraphQueryManager): ToolDefinition[] {
       },
     },
     {
-      name: 'codegraph_mybatis',
+      name: 'mini_codegraph_mybatis',
       description: 'List MyBatis mapper XML bindings — maps Java interface methods to SQL statements.',
       inputSchema: {
         type: 'object',
@@ -395,7 +385,7 @@ export function createTools(graph: GraphQueryManager): ToolDefinition[] {
       },
     },
     {
-      name: 'codegraph_modules',
+      name: 'mini_codegraph_modules',
       description: 'List all indexed modules (microservices) in the project.',
       inputSchema: {
         type: 'object',
@@ -412,3 +402,4 @@ export function createTools(graph: GraphQueryManager): ToolDefinition[] {
     },
   ]
 }
+

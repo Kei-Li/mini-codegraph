@@ -1,31 +1,52 @@
+import { readFileSync, writeFileSync, existsSync, unlinkSync, mkdirSync } from 'node:fs'
 import { createServer, type Socket } from 'node:net'
-import { writeFileSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { MCPServer } from '../mcp/server.js'
 import type { Transport } from '../mcp/types.js'
 import type { GraphQueryManager } from '../graph/queries.js'
+import type { PendingFile } from '../sync/watcher.js'
+import { logInfo, logWarn, logError, logDebug } from '../logger.js'
 
-interface ClientConnection {
-  socket: Socket
+const PACKAGE_VERSION = '0.2.0'
+const DAEMON_PROTOCOL_VERSION = 1
+
+interface LockInfo {
+  pid: number
+  version: string
+  socketPath: string
+  startedAt: number
 }
 
 export class DaemonServer {
   private server: ReturnType<typeof createServer> | null = null
   private port = 0
   private dataDir: string
-  private clients: Map<Socket, ClientConnection> = new Map()
+  private projectRoot: string
+  private clients: Map<Socket, { socket: Socket; ppid?: number }> = new Map()
   private idleTimer: ReturnType<typeof setTimeout> | null = null
+  private ppidWatchdogTimer: ReturnType<typeof setInterval> | null = null
   private staleCheckTimer: ReturnType<typeof setInterval> | null = null
-  private readonly idleTimeoutMs = 300_000 // 5 minutes
-  private readonly staleCheckIntervalMs = 30_000 // 30 seconds
+  private readonly idleTimeoutMs = parseInt(process.env.MINI_CG_DAEMON_IDLE_TIMEOUT_MS ?? '300000', 10)
+  private readonly ppidCheckIntervalMs = 5000
+  private readonly staleCheckIntervalMs = 30000
+  private readonly socketPath: string
   private graph: GraphQueryManager
+  private getPendingFiles: () => PendingFile[]
 
-  constructor(projectRoot: string, graph: GraphQueryManager) {
-    this.dataDir = join(projectRoot, '.codegraph')
+  constructor(projectRoot: string, graph: GraphQueryManager, getPendingFiles?: () => PendingFile[]) {
+    this.projectRoot = projectRoot
+    this.dataDir = join(projectRoot, '.mini-codegraph')
     this.graph = graph
+    this.getPendingFiles = getPendingFiles ?? (() => [])
+    this.socketPath = join(this.dataDir, 'daemon.sock')
+    if (!existsSync(this.dataDir)) {
+      mkdirSync(this.dataDir, { recursive: true })
+    }
   }
 
-  start(): Promise<number> {
+  async start(): Promise<number> {
+    this.cleanupStaleSocket()
+
     return new Promise((resolve, reject) => {
       this.server = createServer((socket) => {
         this.handleConnection(socket)
@@ -35,51 +56,57 @@ export class DaemonServer {
         const addr = this.server?.address()
         if (addr && typeof addr === 'object') {
           this.port = addr.port
-          const portFile = join(this.dataDir, 'daemon.port')
-          const pidFile = join(this.dataDir, 'daemon.pid')
-          writeFileSync(portFile, String(this.port), 'utf-8')
-          writeFileSync(pidFile, String(process.pid), 'utf-8')
-          console.error(`Daemon started on port ${this.port} (pid ${process.pid})`)
+          this.writePortFile()
+          this.writePidFile()
+          this.acquireLock()
+          this.startPpidWatchdog()
           this.startStaleCheck()
           this.resetIdleTimer()
+          logInfo(`Daemon started on port ${this.port} (pid ${process.pid}, v${PACKAGE_VERSION})`)
           resolve(this.port)
         } else {
           reject(new Error('Failed to get port'))
         }
       })
 
-      this.server.on('error', reject)
+      this.server.on('error', (err) => {
+        logError('Daemon server error:', err)
+        reject(err)
+      })
     })
   }
 
-  stop(): void {
-    if (this.idleTimer) clearTimeout(this.idleTimer)
-    if (this.staleCheckTimer) clearInterval(this.staleCheckTimer)
+  stop(reason?: string): void {
+    logInfo(`Daemon stopping${reason ? `: ${reason}` : ''}`)
+    this.clearTimers()
     for (const [socket] of this.clients) {
-      socket.destroy()
+      try { socket.destroy() } catch {}
     }
     this.clients.clear()
-    this.server?.close()
+    this.server?.close(() => {
+      this.cleanupFiles()
+    })
+    setTimeout(() => process.exit(0), 1000)
+  }
 
-    try {
-      unlinkSync(join(this.dataDir, 'daemon.port'))
-    } catch {}
-    try {
-      unlinkSync(join(this.dataDir, 'daemon.pid'))
-    } catch {}
+  getClientCount(): number {
+    return this.clients.size
   }
 
   private handleConnection(socket: Socket): void {
-    const conn: ClientConnection = { socket }
+    const ppid = process.ppid
+    const conn: { socket: Socket; ppid?: number } = { socket, ppid }
     this.clients.set(socket, conn)
 
-    const transport = new SocketTransport(socket)
-    const mcp = new MCPServer(transport, this.graph)
+    this.sendHello(socket)
+
+    const transport = new DaemonSocketTransport(socket)
+    const mcp = new MCPServer(transport, this.graph, this.getPendingFiles)
     mcp.start()
 
     socket.on('close', () => {
       this.clients.delete(socket)
-      console.error(`Client disconnected (${this.clients.size} remaining)`)
+      logDebug(`Client disconnected (${this.clients.size} remaining)`)
       this.resetIdleTimer()
       if (this.clients.size === 0) {
         this.scheduleShutdown()
@@ -91,10 +118,52 @@ export class DaemonServer {
     })
 
     this.resetIdleTimer()
-    if (this.idleTimer) {
-      clearTimeout(this.idleTimer)
-      this.idleTimer = null
-    }
+  }
+
+  private sendHello(socket: Socket): void {
+    const hello = JSON.stringify({
+      type: 'hello',
+      version: PACKAGE_VERSION,
+      pid: process.pid,
+      protocol: DAEMON_PROTOCOL_VERSION,
+    })
+    try { socket.write(hello + '\n') } catch {}
+  }
+
+  private startPpidWatchdog(): void {
+    this.ppidWatchdogTimer = setInterval(() => {
+      try {
+        if (process.ppid <= 1) {
+          logWarn('Parent process exited, shutting down daemon')
+          this.stop('Parent died')
+        }
+        process.kill(process.ppid, 0)
+      } catch {
+        logWarn('Parent process unreachable, shutting down daemon')
+        this.stop('Parent died')
+      }
+    }, this.ppidCheckIntervalMs)
+    this.ppidWatchdogTimer.unref()
+  }
+
+  private startStaleCheck(): void {
+    this.staleCheckTimer = setInterval(() => {
+      this.graph.checkStaleFiles()
+      const warning = this.graph.getStalenessWarning()
+      if (warning) {
+        logDebug(`Stale files: ${warning}`)
+      }
+    }, this.staleCheckIntervalMs)
+    this.staleCheckTimer.unref()
+  }
+
+  private scheduleShutdown(): void {
+    if (this.idleTimer) clearTimeout(this.idleTimer)
+    this.idleTimer = setTimeout(() => {
+      logInfo('Idle timeout reached, shutting down daemon')
+      this.stop('Idle timeout')
+    }, this.idleTimeoutMs)
+    this.idleTimer.unref()
   }
 
   private resetIdleTimer(): void {
@@ -104,33 +173,59 @@ export class DaemonServer {
     }
   }
 
-  private scheduleShutdown(): void {
-    this.idleTimer = setTimeout(() => {
-      console.error('Idle timeout reached, shutting down daemon')
-      this.stop()
-      process.exit(0)
-    }, this.idleTimeoutMs)
-    this.idleTimer.unref()
+  private clearTimers(): void {
+    if (this.idleTimer) clearTimeout(this.idleTimer)
+    if (this.ppidWatchdogTimer) clearInterval(this.ppidWatchdogTimer)
+    if (this.staleCheckTimer) clearInterval(this.staleCheckTimer)
+    this.idleTimer = null
+    this.ppidWatchdogTimer = null
+    this.staleCheckTimer = null
   }
 
-  getClientCount(): number {
-    return this.clients.size
+  private cleanupStaleSocket(): void {
+    try { unlinkSync(this.socketPath) } catch {}
   }
 
-  private startStaleCheck(): void {
-    this.staleCheckTimer = setInterval(() => {
-      const staleBefore = this.graph.getStalenessWarning()
-      this.graph.checkStaleFiles()
-      const staleAfter = this.graph.getStalenessWarning()
-      if (staleAfter && staleAfter !== staleBefore) {
-        console.error(`Stale files detected: ${staleAfter}`)
+  private cleanupFiles(): void {
+    try { unlinkSync(join(this.dataDir, 'daemon.port')) } catch {}
+    try { unlinkSync(join(this.dataDir, 'daemon.pid')) } catch {}
+    try { unlinkSync(join(this.dataDir, 'daemon.lock')) } catch {}
+    try { unlinkSync(this.socketPath) } catch {}
+  }
+
+  private writePortFile(): void {
+    try {
+      writeFileSync(join(this.dataDir, 'daemon.port'), String(this.port), 'utf-8')
+    } catch (e) {
+      logError('Failed to write port file:', e)
+    }
+  }
+
+  private writePidFile(): void {
+    try {
+      writeFileSync(join(this.dataDir, 'daemon.pid'), `${process.pid}\n${PACKAGE_VERSION}`, 'utf-8')
+    } catch (e) {
+      logError('Failed to write pid file:', e)
+    }
+  }
+
+  private acquireLock(): void {
+    const lockPath = join(this.dataDir, 'daemon.lock')
+    try {
+      const lockInfo: LockInfo = {
+        pid: process.pid,
+        version: PACKAGE_VERSION,
+        socketPath: this.socketPath,
+        startedAt: Date.now(),
       }
-    }, this.staleCheckIntervalMs)
-    this.staleCheckTimer.unref()
+      writeFileSync(lockPath, JSON.stringify(lockInfo, null, 2), 'utf-8')
+    } catch (e) {
+      logError('Failed to acquire lock:', e)
+    }
   }
 }
 
-class SocketTransport implements Transport {
+class DaemonSocketTransport implements Transport {
   private buffer = ''
   private onMessage: ((msg: any) => void) | null = null
   private onClose: (() => void) | null = null
@@ -145,6 +240,7 @@ class SocketTransport implements Transport {
         if (!line) continue
         try {
           const msg = JSON.parse(line)
+          if (msg.type === 'hello') continue
           this.onMessage?.(msg)
         } catch {}
       }
@@ -159,13 +255,22 @@ class SocketTransport implements Transport {
   }
 
   send(response: any): void {
-    const json = JSON.stringify(response)
     try {
-      this.socket.write(json + '\n')
+      this.socket.write(JSON.stringify(response) + '\n')
     } catch {}
   }
 
   stop(): void {
     this.socket.end()
+  }
+}
+
+export function readDaemonLock(projectRoot: string): LockInfo | null {
+  const lockPath = join(projectRoot, '.mini-codegraph', 'daemon.lock')
+  if (!existsSync(lockPath)) return null
+  try {
+    return JSON.parse(readFileSync(lockPath, 'utf-8'))
+  } catch {
+    return null
   }
 }

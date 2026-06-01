@@ -1,4 +1,4 @@
-import type { CodeGraphNode } from '../types.js'
+import type { MiniCodeGraphNode } from '../types.js'
 
 export function formatContextAsMarkdown(
   task: string,

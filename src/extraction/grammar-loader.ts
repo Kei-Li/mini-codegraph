@@ -69,7 +69,7 @@ export class GrammarLoader {
     } else {
       throw new GrammarError(
         `Grammar for "${language}" not found`,
-        { language, wasmPath }
+        { language, wasmPath },
       )
     }
   }

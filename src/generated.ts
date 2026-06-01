@@ -9,28 +9,26 @@ const GENERATED_PATTERNS = [
   /[/\\]out[/\\]/,
   /[/\\]__pycache__[/\\]/,
   /[/\\]\.nuxt[/\\]/,
+  /[/\\]proto-gen[/\\]/,
+  /[/\\]protobuf[/\\]/,
+  /[/\\]grpc-gen[/\\]/,
 ]
 
 const TEST_FILE_PATTERNS = [
   /[/\\]src[/\\]test[/\\]/,
-  /[/\\]src\/test[/\\]/,
-  /test[/\\]/,
+  /[/\\]test[/\\]s?[/\\]/,
   /__tests__[/\\]/,
   /\.test\./,
   /\.spec\./,
   /Test\.java$/,
   /Tests\.java$/,
+  /Spec\./,
 ]
 
 const GENERATED_FILE_NAMES = [
-  'generated',
-  'GrpcService',
-  'GrpcClient',
-  'Proto',
-  'MapperImpl',
-  'QueryDSL',
-  'Q',
-  'ModelMapper',
+  'generated', 'GrpcService', 'GrpcClient', 'Proto',
+  'MapperImpl', 'QueryDSL', 'Q', 'ModelMapper', 'AutoValue',
+  '_pb', '_grpc_pb', 'Mock', 'Stub',
 ]
 
 export function isGeneratedFile(filePath: string): boolean {
@@ -76,9 +74,29 @@ export function matchingSpringPattern(implName: string): string | null {
   return null
 }
 
-export function rankBoost(filePath: string): number {
+export function computePathRelevance(filePath: string): number {
   if (isGeneratedFile(filePath)) return -2
   if (isTestFile(filePath)) return -1
   if (filePath.includes('src/main') || filePath.includes('src/')) return 1
+  if (filePath.includes('app/') || filePath.includes('components/')) return 1
   return 0
 }
+
+export function rankSearchResults<T extends { filePath: string }>(
+  results: T[]
+): T[] {
+  return results.sort((a, b) => {
+    const ra = computePathRelevance(a.filePath)
+    const rb = computePathRelevance(b.filePath)
+    if (ra !== rb) return rb - ra
+    return 0
+  })
+}
+
+export const DEFAULT_IGNORE_DIRS = new Set([
+  'node_modules', '.git', 'target', 'build', 'dist', '.next', '.nuxt',
+  '__pycache__', '.cache', '.idea', '.vscode', 'coverage', '.nyc_output',
+  '.mini-codegraph', 'grammars', 'vendor', '.gradle', 'out', 'bin', 'obj',
+  '.tox', '.eggs', 'eggs-info', 'site-packages', 'Pods', '.build',
+  'DerivedData', '.serverless', '.terraform', '.docusaurus',
+])

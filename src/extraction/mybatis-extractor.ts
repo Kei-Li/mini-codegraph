@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, readdirSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import type { QueryManager } from '../db/queries.js'
 
@@ -80,7 +80,6 @@ export function indexMyBatisMappers(
 
   const scanDir = (dir: string) => {
     if (!existsSync(dir)) return
-    const { readdirSync } = require('node:fs')
     const entries = readdirSync(dir, { withFileTypes: true })
 
     for (const entry of entries) {

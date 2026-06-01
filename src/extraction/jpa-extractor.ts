@@ -67,9 +67,23 @@ export function indexJpaEntities(
   for (const e of entities) {
     const entityId = `jpa:${e.className}`
 
-    const searchNodes = queries.searchNodes(e.className, 10)
-    for (const n of searchNodes) {
+    const existing = queries.getNode(entityId)
+    if (!existing) {
+      queries.insertNode({
+        id: entityId, kind: 'data', name: e.className,
+        qualifiedName: `jpa:${e.className}`,
+        filePath, language: 'java',
+        startLine: 0, endLine: 0, startColumn: 0, endColumn: 0,
+        docstring: `JPA Entity: ${e.className} (table: ${e.tableName})`,
+        signature: JSON.stringify({ table: e.tableName, columns: e.columns.length, relationships: e.relationships.length }),
+        visibility: 'public', isExported: false, parentId: null, moduleId,
+      })
+    }
+
+    const nodeMatches = queries.searchNodes(e.className, 10)
+    for (const n of nodeMatches) {
       if (n.filePath === filePath) {
+        queries.insertAnnotation(n.id, 'Entity', e.tableName, 0, moduleId)
         queries.insertEdge(n.id, entityId, 'jpa_entity',
           JSON.stringify({ table: e.tableName, class: e.className }), 0, 0)
       }

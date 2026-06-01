@@ -1,5 +1,5 @@
 import type { QueryManager } from '../db/queries.js'
-import type { CodeGraphNode } from '../types.js'
+import type { MiniCodeGraphNode } from '../types.js'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -48,7 +48,7 @@ export class CodeAnalyzer {
     private projectRoot: string
   ) {}
 
-  computeCyclomaticComplexity(functionNode: CodeGraphNode): ComplexityResult | null {
+  computeCyclomaticComplexity(functionNode: MiniCodeGraphNode): ComplexityResult | null {
     if (!['function', 'method', 'constructor'].includes(functionNode.kind)) return null
 
     try {
@@ -243,7 +243,7 @@ export class CodeAnalyzer {
     return entries
   }
 
-  findSimilarCode(node: CodeGraphNode, allNodes?: CodeGraphNode[]): SimilarCodeResult[] {
+  findSimilarCode(node: MiniCodeGraphNode, allNodes?: MiniCodeGraphNode[]): SimilarCodeResult[] {
     const results: SimilarCodeResult[] = []
     const candidates = allNodes ?? this.queries.getAllNodes()
 
@@ -272,7 +272,7 @@ export class CodeAnalyzer {
     return results.slice(0, 10)
   }
 
-  private normalizeSignature(node: CodeGraphNode): string[] | null {
+  private normalizeSignature(node: MiniCodeGraphNode): string[] | null {
     const text = [
       node.name,
       node.signature,

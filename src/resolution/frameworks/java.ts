@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join, extname } from 'node:path'
 import type { QueryManager } from '../../db/queries.js'
-import type { CodeGraphNode, UnresolvedReference, AnnotationInfo, FrameworkDetectionResult } from '../../types.js'
+import type { MiniCodeGraphNode, UnresolvedReference, AnnotationInfo, FrameworkDetectionResult } from '../../types.js'
 import { matchReference } from '../name-matcher.js'
 
 export interface SpringResolverContext {
@@ -79,7 +79,7 @@ export function detectSpring(projectRoot: string): FrameworkDetectionResult | nu
 export function resolveSpringReference(
   ctx: SpringResolverContext,
   ref: UnresolvedReference
-): CodeGraphNode | null {
+): MiniCodeGraphNode | null {
   const refName = ref.referenceName
   const node = ctx.queries.getNode(ref.sourceNodeId)
   if (!node) return null
@@ -135,8 +135,8 @@ export function resolveSpringReference(
 function resolveAutowiredBean(
   ctx: SpringResolverContext,
   refName: string,
-  node: CodeGraphNode
-): CodeGraphNode | null {
+  node: MiniCodeGraphNode
+): MiniCodeGraphNode | null {
   const matches = matchReference(ctx.queries, refName, node.filePath, ctx.moduleId, 'class')
   for (const m of matches) {
     if (m.node.moduleId === ctx.moduleId || ctx.allModules.includes(m.node.moduleId ?? '')) {
@@ -163,7 +163,7 @@ function resolveAutowiredBean(
 function resolveConfigValue(
   ctx: SpringResolverContext,
   refName: string
-): CodeGraphNode | null {
+): MiniCodeGraphNode | null {
   const key = refName.replace(/\$\{([^}]+)\}.*/, '$1').trim()
   const configDir = join(ctx.projectRoot, 'src', 'main', 'resources')
   const configFiles = ['application.yml', 'application.yaml', 'application.properties']
@@ -192,8 +192,8 @@ function resolveConfigValue(
 function resolveFeignClientTarget(
   ctx: SpringResolverContext,
   refName: string,
-  feignInterface: CodeGraphNode
-): CodeGraphNode | null {
+  feignInterface: MiniCodeGraphNode
+): MiniCodeGraphNode | null {
   const feignName = feignInterface.name.replace('Client', '')
   const targetService = refName.replace('Client', '')
 
@@ -225,7 +225,7 @@ function resolveFeignClientTarget(
   return null
 }
 
-function resolveServiceInterface(ctx: SpringResolverContext, iface: CodeGraphNode): CodeGraphNode | null {
+function resolveServiceInterface(ctx: SpringResolverContext, iface: MiniCodeGraphNode): MiniCodeGraphNode | null {
   const implName = iface.name.endsWith('Service') ? `${iface.name}Impl` : iface.name
   const impls = ctx.queries.searchNodes(implName, 10)
   for (const impl of impls) {
@@ -243,7 +243,7 @@ function resolveServiceInterface(ctx: SpringResolverContext, iface: CodeGraphNod
   return null
 }
 
-function resolveServiceImpl(ctx: SpringResolverContext, impl: CodeGraphNode): CodeGraphNode | null {
+function resolveServiceImpl(ctx: SpringResolverContext, impl: MiniCodeGraphNode): MiniCodeGraphNode | null {
   const ifaceName = impl.name.replace('Impl', '')
   const ifaces = ctx.queries.searchNodes(ifaceName, 10)
   for (const iface of ifaces) {
