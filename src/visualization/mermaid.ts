@@ -76,7 +76,7 @@ export function generateFullTraceDiagram(queries: QueryManager, serviceFilter?: 
 
   for (const ae of traces.slice(0, 10)) {
     let meta: any = {}
-    try { meta = JSON.parse(ae.metadata ?? '{}') } catch {}
+    try { meta = JSON.parse(ae.metadata ?? '{}') } catch { /* silent */ }
     const vueId = escapeId(`vue_${ae.sourceId}`)
     lines.push(`  ${vueId}["Vue: ${ae.sourceId.split('/').pop()}"]`)
 
@@ -138,7 +138,7 @@ export function generateCacheTopologyDiagram(queries: QueryManager): string {
           cacheNodes.add(cn)
         }
       }
-    } catch {}
+    } catch { /* silent */ }
   }
 
   lines.push('')
@@ -163,7 +163,7 @@ export function generateTxPropagationDiagram(queries: QueryManager): string {
           lines.push(`  ${nid} -.->|readOnly| ${nid}`)
         }
       }
-    } catch {}
+    } catch { /* silent */ }
   }
 
   const propEdges = queries.getAllEdges().filter(e => e.kind === 'tx_propagate')

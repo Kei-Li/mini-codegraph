@@ -77,7 +77,7 @@ export function extractConfigProperties(projectRoot: string): { key: string; val
       for (const p of parsed) {
         result.push({ key: p.key, value: p.value, sourceFile: filePath, sourceLine: p.line })
       }
-    } catch {}
+    } catch { /* silent */ }
   }
 
   return result

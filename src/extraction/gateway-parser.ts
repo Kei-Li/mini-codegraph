@@ -55,7 +55,7 @@ export function parseGatewayConfig(projectRoot: string): GatewayRouteInfo[] {
           return parseGatewayYaml(routeSection[0])
         }
       }
-    } catch {}
+    } catch { /* silent */ }
   }
 
   return []

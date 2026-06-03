@@ -327,7 +327,7 @@ export class ContextBuilder {
           const end = Math.min(n.endLine, lines.length)
           code = lines.slice(n.startLine - 1, end).join('\n')
         }
-      } catch {}
+      } catch { /* silent */ }
 
       const callers = this.queries.getCallers(n.id)
       const callees = this.queries.getCallees(n.id)
@@ -341,7 +341,7 @@ export class ContextBuilder {
             if (implementations.length >= 5) break implLoop
           }
         }
-      } catch {}
+      } catch { /* silent */ }
 
       const relatedRoutes = annotations
         .filter(a => ['GetMapping', 'PostMapping', 'PutMapping', 'DeleteMapping', 'PatchMapping', 'RequestMapping'].includes(a.annotationName))
@@ -398,7 +398,7 @@ export class ContextBuilder {
               }
             }
           }
-        } catch {}
+        } catch { /* silent */ }
       }
     }
     return traces

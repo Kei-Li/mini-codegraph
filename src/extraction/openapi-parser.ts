@@ -48,7 +48,7 @@ export function parseOpenApiFile(filePath: string): OpenApiEndpoint[] {
         }
       }
     }
-  } catch {}
+  } catch { /* silent */ }
   return endpoints
 }
 

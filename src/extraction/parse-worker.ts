@@ -1,39 +1,23 @@
 import { parentPort } from 'node:worker_threads'
-import { readFileSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 import { GrammarLoader } from './grammar-loader.js'
 import { parseJavaFile } from './languages/java.js'
 import { parseTypeScriptFile } from './languages/typescript.js'
 import { parsePythonFile } from './languages/python.js'
 import { parseVueFile } from './languages/vue.js'
-import { languageForFile } from '../utils.js'
-import type { NodeInfo, EdgeInfo } from './languages/java.js'
+import { computeContentHash } from '../utils.js'
+import type { WorkerRequest, WorkerResponse } from './worker-types.js'
 
 const grammarLoader = new GrammarLoader()
 let grammarInitialized = false
 
-interface ParseRequest {
-  type: 'parse'
-  id: number
-  filePath: string
-  content: string
-  grammarName: string
-  language: string
-}
-
-interface InitRequest {
-  type: 'init'
-}
-
-interface ShutdownRequest {
-  type: 'shutdown'
-}
-
-type WorkerMessage = ParseRequest | InitRequest | ShutdownRequest
-
 const parseCounts = new Map<string, number>()
 const PARSER_RESET_INTERVAL = 5000
+const HEARTBEAT_INTERVAL = 5000
 
-parentPort?.on('message', async (msg: WorkerMessage) => {
+setInterval(() => parentPort?.postMessage({ type: 'heartbeat' }), HEARTBEAT_INTERVAL)
+
+parentPort?.on('message', async (msg: WorkerRequest) => {
   if (msg.type === 'init') {
     try {
       await grammarLoader.init()
@@ -66,8 +50,21 @@ parentPort?.on('message', async (msg: WorkerMessage) => {
     }
 
     try {
+      const source = readFileSync(msg.absolutePath, 'utf-8')
+      const stat = statSync(msg.absolutePath)
+      const contentHash = computeContentHash(source)
+
+      if (source.length > 1_048_576) {
+        parentPort?.postMessage({
+          type: 'parse-result',
+          id: msg.id,
+          error: 'File exceeds 1MB size limit',
+        })
+        return
+      }
+
       const parser = await grammarLoader.loadGrammar(msg.grammarName)
-      const tree = parser.parse(msg.content)
+      const tree = parser.parse(source)
 
       if (!tree || !tree.rootNode) {
         parentPort?.postMessage({
@@ -79,19 +76,20 @@ parentPort?.on('message', async (msg: WorkerMessage) => {
       }
 
       const parseResult = msg.language === 'java'
-        ? parseJavaFile(tree, msg.content, msg.filePath, msg.language)
+        ? parseJavaFile(tree, source, msg.filePath, msg.language)
         : msg.language === 'python'
-          ? parsePythonFile(tree, msg.content, msg.filePath, msg.language)
+          ? parsePythonFile(tree, source, msg.filePath, msg.language)
           : msg.language === 'vue'
-            ? parseVueFile(parser, msg.content, msg.filePath, msg.language)
-            : parseTypeScriptFile(tree, msg.content, msg.filePath, msg.language)
-
-      // increment tracked via parseCounts above
+            ? parseVueFile(parser, source, msg.filePath, msg.language)
+            : parseTypeScriptFile(tree, source, msg.filePath, msg.language)
 
       parentPort?.postMessage({
         type: 'parse-result',
         id: msg.id,
         result: parseResult,
+        source,
+        contentHash,
+        stat: { size: stat.size, mtimeMs: stat.mtimeMs },
       })
     } catch (e) {
       parentPort?.postMessage({

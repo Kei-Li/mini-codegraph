@@ -137,7 +137,7 @@ export function extractRedisConfig(projectRoot: string): { host: string; port: n
         const cluster = block.includes('cluster:') || block.includes('sentinel:')
         return { host, port, database, cluster }
       }
-    } catch {}
+    } catch { /* silent */ }
   }
 
   return undefined

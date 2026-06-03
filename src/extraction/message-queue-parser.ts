@@ -67,6 +67,7 @@ export function indexQueueBindings(
   const bindings = extractQueueBindings(source, filePath)
   if (bindings.length === 0) return bindings
 
+  const moduleNodes = queries.getAllNodes()
   for (const b of bindings) {
     const bindingId = `mq:${b.type}:${b.topic}:${b.direction}:${filePath}`
     const topicId = `topic:${b.topic}`
@@ -96,7 +97,6 @@ export function indexQueueBindings(
       }
     }
 
-    const moduleNodes = queries.getAllNodes()
     for (const n of moduleNodes) {
       if (n.moduleId && n.moduleId !== moduleId) {
         if (n.name.toLowerCase().includes(b.topic.toLowerCase())) {

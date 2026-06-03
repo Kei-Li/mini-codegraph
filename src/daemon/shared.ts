@@ -43,7 +43,7 @@ export class SharedDaemon {
 
     try {
       if (existsSync(socketPath)) unlinkSync(socketPath)
-    } catch {}
+    } catch { /* silent */ }
 
     this.server = createServer((socket) => {
       const clientId = `client_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
@@ -141,7 +141,7 @@ export class SharedDaemon {
     for (const [, client] of this.clients) {
       try {
         client.socket.write(message + '\n')
-      } catch {}
+      } catch { /* silent */ }
     }
   }
 
@@ -149,14 +149,14 @@ export class SharedDaemon {
     for (const [, client] of this.clients) {
       try {
         client.socket.end('SHUTDOWN\n')
-      } catch {}
+      } catch { /* silent */ }
     }
     this.clients.clear()
     this.server?.close()
     this.stopWatchdog()
     try {
       if (existsSync(this.config.socketPath)) unlinkSync(this.config.socketPath)
-    } catch {}
+    } catch { /* silent */ }
   }
 
   private resetIdleTimer(): void {
@@ -182,7 +182,7 @@ export class SharedDaemon {
               this.clients.delete(id)
             }
           }
-        } catch {}
+        } catch { /* silent */ }
       }
     }, WATCHDOG_INTERVAL)
   }

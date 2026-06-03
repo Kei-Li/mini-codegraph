@@ -1,5 +1,5 @@
 import type { DatabaseConnection } from './connection.js'
-import type { MiniCodeGraphNode, FileRecord, ModuleInfo, UnresolvedReference } from '../types.js'
+import type { MiniCodeGraphNode, MiniCodeGraphEdge, FileRecord, ModuleInfo, UnresolvedReference } from '../types.js'
 import * as Q from './schema.js'
 
 function mapRowToNode(row: Record<string, any>): MiniCodeGraphNode {
@@ -49,6 +49,86 @@ function mapRowToModule(row: Record<string, any>): ModuleInfo {
 
 export class QueryManager {
   constructor(private db: DatabaseConnection) {}
+
+  private batchMode = false
+  private pendingNodes: MiniCodeGraphNode[] = []
+  private pendingEdges: { source: string; target: string; kind: string; metadata: string; line: number; col: number }[] = []
+  private pendingFiles: (FileRecord & { moduleId?: string })[] = []
+  private pendingDeletes: string[] = []
+  private pendingAnnotations: { id: string; nodeId: string; annotationName: string; value: string; line: number; moduleId: string }[] = []
+
+  enableBatchMode(): void { this.batchMode = true }
+
+  flushBatch(): void {
+    if (this.pendingNodes.length === 0 && this.pendingEdges.length === 0 &&
+        this.pendingFiles.length === 0 && this.pendingDeletes.length === 0 &&
+        this.pendingAnnotations.length === 0) return
+
+    const e = (s: any) => `'${String(s ?? '').replace(/'/g, "''")}'` // SQLite-safe: only ' needs escaping in strings
+    const sqls: string[] = []
+
+    if (this.pendingDeletes.length > 0) {
+      const paths = this.pendingDeletes.map(e).join(',')
+      sqls.push(`DELETE FROM edges WHERE source IN (SELECT id FROM nodes WHERE file_path IN (${paths})) OR target IN (SELECT id FROM nodes WHERE file_path IN (${paths}))`)
+      sqls.push(`DELETE FROM nodes WHERE file_path IN (${paths})`)
+      sqls.push(`DELETE FROM files WHERE path IN (${paths})`)
+      sqls.push(`DELETE FROM unresolved_refs WHERE file_path IN (${paths})`)
+      this.pendingDeletes = []
+    }
+
+    if (this.pendingNodes.length > 0) {
+      const cols = 'id,kind,name,qualified_name,file_path,language,start_line,end_line,start_column,end_column,docstring,signature,visibility,is_exported,parent_id,module_id,metadata'
+      const rows: string[] = []
+      for (const n of this.pendingNodes) {
+        rows.push(`(${[e(n.id), e(n.kind), e(n.name), e(n.qualifiedName), e(n.filePath), e(n.language),
+          n.startLine, n.endLine, n.startColumn, n.endColumn,
+          e(n.docstring), e(n.signature), e(n.visibility),
+          n.isExported ? 1 : 0, e(n.parentId), e(n.moduleId ?? ''), e(n.metadata ?? '{}')].join(',')})`)
+      }
+      const CHUNK = 2000
+      for (let i = 0; i < rows.length; i += CHUNK) {
+        sqls.push(`INSERT OR REPLACE INTO nodes (${cols}) VALUES ${rows.slice(i, i + CHUNK).join(',')}`)
+      }
+      this.pendingNodes = []
+    }
+
+    if (this.pendingEdges.length > 0) {
+      const cols = 'source,target,kind,metadata,line,col'
+      const rows: string[] = []
+      for (const eo of this.pendingEdges) {
+        rows.push(`(${[e(eo.source), e(eo.target), e(eo.kind), e(eo.metadata), eo.line, eo.col].join(',')})`)
+      }
+      const CHUNK = 2000
+      for (let i = 0; i < rows.length; i += CHUNK) {
+        sqls.push(`INSERT OR IGNORE INTO edges (${cols}) VALUES ${rows.slice(i, i + CHUNK).join(',')}`)
+      }
+      this.pendingEdges = []
+    }
+
+    if (this.pendingFiles.length > 0) {
+      for (const f of this.pendingFiles) {
+        sqls.push(`INSERT INTO files (path,content_hash,language,size,modified_at,indexed_at,node_count,module_id) VALUES (${[e(f.path), e(f.contentHash), e(f.language), f.size, f.modifiedAt, f.indexedAt, f.nodeCount, e(f.moduleId ?? '')].join(',')}) ON CONFLICT(path) DO UPDATE SET content_hash=excluded.content_hash,size=excluded.size,modified_at=excluded.modified_at,indexed_at=excluded.indexed_at,node_count=excluded.node_count`)
+      }
+      this.pendingFiles = []
+    }
+
+    if (this.pendingAnnotations.length > 0) {
+      const cols = 'id,node_id,annotation_name,value,line,module_id'
+      const rows: string[] = []
+      for (const a of this.pendingAnnotations) {
+        rows.push(`(${[e(a.id), e(a.nodeId), e(a.annotationName), e(a.value), a.line, e(a.moduleId)].join(',')})`)
+      }
+      const CHUNK = 2000
+      for (let i = 0; i < rows.length; i += CHUNK) {
+        sqls.push(`INSERT OR IGNORE INTO annotations (${cols}) VALUES ${rows.slice(i, i + CHUNK).join(',')}`)
+      }
+      this.pendingAnnotations = []
+    }
+
+    if (sqls.length > 0) {
+      this.db.exec(sqls.join('; '))
+    }
+  }
 
   private sanitizeFts5(query: string): string {
     return query.replace(/[^\w\s-]/g, '').trim()
@@ -144,10 +224,10 @@ export class QueryManager {
     return rows.map(mapRowToNode)
   }
 
-  getNodesByKind(kind: string): MiniCodeGraphNode[] {
-    const stmt = this.db.prepare(Q.GET_NODES_BY_KIND)
-    const rows = stmt.all(kind) as Record<string, any>[]
-    return rows.map(mapRowToNode)
+  getNodesByKind(kind: string, limit?: number): MiniCodeGraphNode[] {
+    const stmt = this.db.prepare(limit ? `${Q.GET_NODES_BY_KIND} LIMIT ?` : Q.GET_NODES_BY_KIND)
+    const rows = limit ? stmt.all(kind, limit) : stmt.all(kind)
+    return (rows as Record<string, any>[]).map(mapRowToNode)
   }
 
   getNodesByQualifiedName(qname: string): MiniCodeGraphNode[] {
@@ -162,7 +242,7 @@ export class QueryManager {
     return rows.map(r => r.file_path)
   }
 
-  getAllEdges(): { sourceId: string; targetId: string; kind: string; metadata: string; line: number; col: number }[] {
+  getAllEdges(): MiniCodeGraphEdge[] {
     const stmt = this.db.prepare('SELECT * FROM edges')
     const rows = stmt.all() as Record<string, any>[]
     return rows.map(r => ({
@@ -189,6 +269,10 @@ export class QueryManager {
   }
 
   insertNode(node: MiniCodeGraphNode): void {
+    if (this.batchMode) {
+      this.pendingNodes.push(node)
+      return
+    }
     const stmt = this.db.prepare(Q.INSERT_NODE)
     stmt.run(
       node.id, node.kind, node.name, node.qualifiedName,
@@ -200,11 +284,19 @@ export class QueryManager {
   }
 
   insertEdge(source: string, target: string, kind: string, metadata = '{}', line = 0, col = 0): void {
+    if (this.batchMode) {
+      this.pendingEdges.push({ source, target, kind, metadata, line, col })
+      return
+    }
     const stmt = this.db.prepare(Q.INSERT_EDGE)
     stmt.run(source, target, kind, metadata, line, col)
   }
 
   upsertFile(file: FileRecord & { moduleId?: string }): void {
+    if (this.batchMode) {
+      this.pendingFiles.push(file)
+      return
+    }
     const stmt = this.db.prepare(Q.UPSERT_FILE)
     stmt.run(
       file.path, file.contentHash, file.language, file.size,
@@ -214,6 +306,10 @@ export class QueryManager {
   }
 
   deleteNodesForFile(filePath: string): void {
+    if (this.batchMode) {
+      this.pendingDeletes.push(filePath)
+      return
+    }
     this.db.prepare(Q.DELETE_FILE_EDGES).run(filePath, filePath)
     this.db.prepare(Q.DELETE_FILE_NODES).run(filePath)
     this.db.prepare(Q.DELETE_FILE_RECORD).run(filePath)
@@ -262,6 +358,10 @@ export class QueryManager {
 
   insertAnnotation(nodeId: string, annotationName: string, value: string, line: number, moduleId: string): void {
     const id = `${nodeId}:@${annotationName}`
+    if (this.batchMode) {
+      this.pendingAnnotations.push({ id, nodeId, annotationName, value, line, moduleId })
+      return
+    }
     const stmt = this.db.prepare(Q.INSERT_ANNOTATION)
     stmt.run(id, nodeId, annotationName, value, line, moduleId)
   }
@@ -272,10 +372,17 @@ export class QueryManager {
     return rows.map(r => ({ annotationName: r.annotation_name, value: r.value }))
   }
 
-  getNodesByAnnotation(annotationName: string): MiniCodeGraphNode[] {
-    const stmt = this.db.prepare(Q.GET_NODES_BY_ANNOTATION)
-    const rows = stmt.all(annotationName) as Record<string, any>[]
-    return rows.map(mapRowToNode)
+  getNodesByAnnotation(annotationName: string, limit?: number): MiniCodeGraphNode[] {
+    const stmt = this.db.prepare(limit ? `${Q.GET_NODES_BY_ANNOTATION} LIMIT ?` : Q.GET_NODES_BY_ANNOTATION)
+    const rows = limit ? stmt.all(annotationName, limit) : stmt.all(annotationName)
+    return (rows as Record<string, any>[]).map(mapRowToNode)
+  }
+
+  getNodesByIdPrefix(prefix: string, limit?: number): MiniCodeGraphNode[] {
+    const sql = limit ? Q.GET_NODES_BY_ID_PREFIX_LIMIT : Q.GET_NODES_BY_ID_PREFIX
+    const stmt = this.db.prepare(sql)
+    const rows = limit ? stmt.all(prefix, limit) : stmt.all(prefix)
+    return (rows as Record<string, any>[]).map(mapRowToNode)
   }
 
   upsertTemplate(filePath: string, language: string, data: {

@@ -201,7 +201,7 @@ export class CodeAnalyzer {
     return deadImports
   }
 
-  findEntryPoints(): EntryPointResult[] {
+  async findEntryPoints(): Promise<EntryPointResult[]> {
     const allNodes = this.queries.getAllNodes()
     const entries: EntryPointResult[] = []
 
@@ -224,21 +224,19 @@ export class CodeAnalyzer {
       }
     }
 
-    // Also add HTTP route handlers as entry points
     try {
-      const { detectRoutes } = require('../extraction/routes.js')
+      const { detectRoutes } = await import('../extraction/routes.js')
       const graphQuery = { getNode: (id: string) => this.queries.getNode(id) }
       const routes = detectRoutes(this.projectRoot, this.queries, graphQuery as any)
       for (const route of routes) {
-        const handlerName = route.method || route.path.split('/').pop() || 'handler'
         entries.push({
-          name: handlerName,
-          filePath: route.file,
+          name: route.handlerName,
+          filePath: route.handlerFile,
           kind: 'route',
-          reason: `${route.framework} ${route.httpMethod || 'ANY'} ${route.path}`,
+          reason: `${route.framework} ${route.path}`,
         })
       }
-    } catch {}
+    } catch { /* silent */ }
 
     return entries
   }

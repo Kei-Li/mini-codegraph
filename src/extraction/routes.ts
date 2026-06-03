@@ -54,21 +54,21 @@ export function detectRoutes(
       const pip = readFileSync(requirementsTxt, 'utf-8')
       if (/^Django/im.test(pip)) routes.push(...detectDjangoRoutes(projectRoot, queries, graph))
       if (/^Flask/im.test(pip)) routes.push(...detectFlaskRoutes(projectRoot, queries, graph))
-    } catch {}
+    } catch { /* silent */ }
   }
 
   if (existsSync(gemfile)) {
     try {
       const gem = readFileSync(gemfile, 'utf-8')
       if (/gem\s+['"]rails['"]/im.test(gem)) routes.push(...detectRailsRoutes(projectRoot, queries, graph))
-    } catch {}
+    } catch { /* silent */ }
   }
 
   if (existsSync(goMod)) {
     try {
       const mod = readFileSync(goMod, 'utf-8')
       if (/gin-gonic\/gin/.test(mod)) routes.push(...detectGinRoutes(projectRoot, queries, graph))
-    } catch {}
+    } catch { /* silent */ }
   }
 
   if (existsSync(composerJson)) {
@@ -76,7 +76,7 @@ export function detectRoutes(
       const composer = JSON.parse(readFileSync(composerJson, 'utf-8'))
       const deps = { ...composer.require, ...composer['require-dev'] } as Record<string, string>
       if (deps?.['laravel/framework']) routes.push(...detectLaravelRoutes(projectRoot, queries, graph))
-    } catch {}
+    } catch { /* silent */ }
   }
 
   // ASP.NET — detect by .csproj files
@@ -88,7 +88,7 @@ export function detectRoutes(
         routes.push(...detectAspNetCoreRoutes(projectRoot, queries, graph))
         break
       }
-    } catch {}
+    } catch { /* silent */ }
   }
 
   return routes
@@ -420,7 +420,7 @@ function detectDjangoRoutes(projectRoot: string, _queries: QueryManager, _graph:
           sourceLine: lines[lineNum - 1]?.trim() ?? '',
         })
       }
-    } catch {}
+    } catch { /* silent */ }
   }
 
   return routes
@@ -466,7 +466,7 @@ function detectFlaskRoutes(projectRoot: string, _queries: QueryManager, _graph: 
           })
         }
       }
-    } catch {}
+    } catch { /* silent */ }
   }
 
   return routes
@@ -509,7 +509,7 @@ function detectRailsRoutes(projectRoot: string, _queries: QueryManager, _graph: 
         sourceLine: lines[lineNum - 1]?.trim() ?? '',
       })
     }
-  } catch {}
+  } catch { /* silent */ }
 
   return routes
 }
@@ -545,7 +545,7 @@ function detectGinRoutes(projectRoot: string, _queries: QueryManager, _graph: Gr
           sourceLine: lines[lineNum - 1]?.trim() ?? '',
         })
       }
-    } catch {}
+    } catch { /* silent */ }
   }
 
   return routes
@@ -590,7 +590,7 @@ function detectLaravelRoutes(projectRoot: string, _queries: QueryManager, _graph
             sourceLine: lines[lineNum - 1]?.trim() ?? '',
           })
         }
-      } catch {}
+      } catch { /* silent */ }
     }
   }
 
@@ -643,7 +643,7 @@ function detectAspNetCoreRoutes(projectRoot: string, _queries: QueryManager, _gr
           sourceLine: lines[lineNum - 1]?.trim() ?? '',
         })
       }
-    } catch {}
+    } catch { /* silent */ }
   }
 
   return routes
@@ -708,7 +708,7 @@ function findFilesByExt(root: string, extensions: string[]): string[] {
         if (extensions.includes(ext)) result.push(fullPath)
       }
     }
-  } catch {}
+  } catch { /* silent */ }
   return result
 }
 

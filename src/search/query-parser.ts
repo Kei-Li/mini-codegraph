@@ -60,6 +60,6 @@ export function filterNodesByLanguage(nodes: { language: string }[], language?: 
 
 export function filterNodesByFile(nodes: { filePath: string }[], filePattern?: string): { filePath: string }[] {
   if (!filePattern) return nodes
-  const regex = new RegExp(filePattern.replace(/\*/g, '.*'), 'i')
+  const regex = new RegExp(filePattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*'), 'i')
   return nodes.filter(n => regex.test(n.filePath))
 }

@@ -83,7 +83,7 @@ export function indexPiniaStores(
               JSON.stringify({ store: store.name, component: n.filePath }), 0, 0)
             store.usedInComponents.push(n.filePath)
           }
-        } catch {}
+        } catch { /* silent */ }
       }
     }
   }

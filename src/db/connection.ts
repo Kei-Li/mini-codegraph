@@ -21,9 +21,11 @@ export class DatabaseConnection {
 
     this.db = new DatabaseSync(this.dbPath)
     this.db.exec('PRAGMA journal_mode=WAL')
+    this.db.exec('PRAGMA synchronous=NORMAL')
     this.db.exec('PRAGMA busy_timeout=5000')
     this.db.exec('PRAGMA cache_size=-65536')
     this.db.exec('PRAGMA mmap_size=268435456')
+    this.db.exec('PRAGMA temp_store=MEMORY')
     this.db.exec(SCHEMA_SQL)
   }
 

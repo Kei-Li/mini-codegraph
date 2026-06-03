@@ -216,6 +216,8 @@ export const GET_FILE_DEPENDENCIES = `
 export const GET_ALL_NODES = `SELECT * FROM nodes`
 export const GET_NODES_BY_KIND = `SELECT * FROM nodes WHERE kind = ?`
 export const GET_NODES_BY_QUALIFIED_NAME = `SELECT * FROM nodes WHERE qualified_name = ?`
+export const GET_NODES_BY_ID_PREFIX = `SELECT * FROM nodes WHERE id LIKE ? || '%'`
+export const GET_NODES_BY_ID_PREFIX_LIMIT = `SELECT * FROM nodes WHERE id LIKE ? || '%' LIMIT ?`
 export const COUNT_NODES = `SELECT COUNT(*) as count FROM nodes`
 export const COUNT_EDGES = `SELECT COUNT(*) as count FROM edges`
 export const COUNT_FILES = `SELECT COUNT(*) as count FROM files`
@@ -246,6 +248,7 @@ export const INSERT_MODULE = `
   VALUES (?, ?, ?, ?, ?, ?)
 `
 export const GET_ALL_MODULES = `SELECT * FROM modules`
+export const GET_ALL_EDGES = `SELECT * FROM edges`
 
 export const INSERT_ANNOTATION = `
   INSERT OR REPLACE INTO annotations (id, node_id, annotation_name, value, line, module_id)

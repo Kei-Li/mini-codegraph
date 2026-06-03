@@ -39,7 +39,7 @@ export function detectVue(projectRoot: string): FrameworkDetectionResult | null 
         const version = deps.vue?.replace('^', '').replace('~', '') || 'unknown'
         return { name: 'vue', version, confidence: deps.vue ? 0.95 : 0.8 }
       }
-    } catch {}
+    } catch { /* silent */ }
   }
 
   const pagesDir = join(projectRoot, 'pages')
@@ -229,7 +229,7 @@ export function extractVueRouterRoutes(projectRoot: string): {
 
         routes.push({ path, component: lazyPath, line: lineNum })
       }
-    } catch {}
+    } catch { /* silent */ }
   }
 
   return routes

@@ -28,7 +28,7 @@ export function getDaemonInfo(projectRoot: string): DaemonInfo | null {
     try {
       process.kill(pid, 0)
       alive = true
-    } catch {}
+    } catch { /* silent */ }
 
     return { port, pid, version, alive }
   } catch {
@@ -67,7 +67,7 @@ export function startDaemon(projectRoot: string): Promise<number> {
           clearInterval(check)
           resolve(port)
         }
-      } catch {}
+      } catch { /* silent */ }
 
       if (attempts >= maxAttempts) {
         clearInterval(check)
@@ -106,7 +106,7 @@ export function connectToDaemonWithVersionCheck(port: number): Promise<{ socket:
               resolve({ socket, version: msg.version ?? 'unknown' })
               return
             }
-          } catch {}
+          } catch { /* silent */ }
         }
       }
       socket.on('data', onData)

@@ -27,7 +27,7 @@ export function parseDockerCompose(filePath: string): DeployContainer[] {
         ports: portMatches, dependsOn: depMatches, envVars: envMatches,
       })
     }
-  } catch {}
+  } catch { /* silent */ }
   return containers
 }
 

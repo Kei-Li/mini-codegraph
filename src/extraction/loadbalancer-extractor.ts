@@ -66,7 +66,7 @@ export function resolveLbUris(queries: QueryManager, moduleId: string): { uri: s
       if (lbMatch) {
         results.push({ uri, targetService: lbMatch[1] })
       }
-    } catch {}
+    } catch { /* silent */ }
   }
 
   const feignClients = queries.getNodesByAnnotation('FeignClient')

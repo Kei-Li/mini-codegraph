@@ -1,9 +1,9 @@
 import { readFileSync, readdirSync, statSync, existsSync, realpathSync, writeFileSync, unlinkSync } from 'node:fs'
 import { join, relative, extname, resolve, sep } from 'node:path'
-import { execSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import ignore from 'ignore'
 import type { Ignore } from 'ignore'
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { SUPPORTED_LANGUAGES } from './types.js'
 import type { LanguageConfig } from './types.js'
 
@@ -36,12 +36,13 @@ export class FileLock {
         unlinkSync(this.lockPath)
       } catch (err) {
         if (err instanceof Error && err.message.includes('locked by another')) throw err
-        try { unlinkSync(this.lockPath) } catch {}
+        try { unlinkSync(this.lockPath) } catch { /* silent */ }
       }
     }
 
+    const lockId = `${process.pid}:${randomBytes(8).toString('hex')}`
     try {
-      writeFileSync(this.lockPath, String(process.pid), { flag: 'wx' })
+      writeFileSync(this.lockPath, lockId, { flag: 'wx' })
       this.held = true
     } catch (err: any) {
       if (err.code === 'EEXIST') {
@@ -56,10 +57,7 @@ export class FileLock {
 
   release(): void {
     if (!this.held) return
-    try {
-      const content = readFileSync(this.lockPath, 'utf-8').trim()
-      if (parseInt(content, 10) === process.pid) unlinkSync(this.lockPath)
-    } catch {}
+    try { unlinkSync(this.lockPath) } catch { /* silent */ }
     this.held = false
   }
 
@@ -119,7 +117,14 @@ export function validatePathWithinRoot(projectRoot: string, filePath: string): s
   const resolved = resolve(projectRoot, filePath)
   const normalizedRoot = resolve(projectRoot)
 
-  if (!resolved.startsWith(normalizedRoot + sep) && resolved !== normalizedRoot) return null
+  const realRoot = (() => {
+    try { return realpathSync(normalizedRoot) } catch { return normalizedRoot }
+  })()
+  const realResolved = (() => {
+    try { return realpathSync(resolved) } catch { return resolved }
+  })()
+
+  if (!realResolved.startsWith(realRoot + sep) && realResolved !== realRoot) return null
   return resolved
 }
 
@@ -127,8 +132,16 @@ export function normalizePath(filePath: string): string {
   return filePath.replace(/\\/g, '/')
 }
 
+export function safeJsonParse(text: string, fallback?: unknown): any {
+  try {
+    return JSON.parse(text, (_key, value) =>
+      _key === '__proto__' || _key === 'constructor' ? undefined : value
+    ) ?? fallback
+  } catch { return fallback } // returns undefined when fallback omitted on parse error
+}
+
 export function computeContentHash(content: string): string {
-  return createHash('sha256').update(content).digest('hex')
+  return createHash('md5').update(content).digest('hex')
 }
 
 export function languageForFile(filePath: string): LanguageConfig | undefined {
@@ -172,12 +185,13 @@ const DEFAULT_IGNORE_PATTERNS: string[] = [
   'bazel-*/',
 ]
 
-export function buildDefaultIgnore(rootDir: string): Ignore {
+export function buildDefaultIgnore(rootDir: string, extraPatterns?: string[]): Ignore {
   const ig = ignore().add(DEFAULT_IGNORE_PATTERNS)
   try {
     const rootGitignore = join(rootDir, '.gitignore')
     if (existsSync(rootGitignore)) ig.add(readFileSync(rootGitignore, 'utf-8'))
-  } catch {}
+  } catch { /* silent */ }
+  if (extraPatterns && extraPatterns.length > 0) ig.add(extraPatterns)
   return ig
 }
 
@@ -186,13 +200,13 @@ export function buildDefaultIgnore(rootDir: string): Ignore {
 function collectGitFiles(repoDir: string, prefix: string, files: Set<string>): void {
   const gitOpts = { cwd: repoDir, encoding: 'utf-8' as const, timeout: 30000, maxBuffer: 50 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'] as ['pipe', 'pipe', 'pipe'], windowsHide: true }
 
-  const tracked = execSync('git ls-files -c --recurse-submodules', gitOpts)
+  const tracked = execFileSync('git', ['ls-files', '-c', '--recurse-submodules'], gitOpts)
   for (const line of tracked.split('\n')) {
     const trimmed = line.trim()
     if (trimmed) files.add(normalizePath(prefix + trimmed))
   }
 
-  const untracked = execSync('git ls-files -o --exclude-standard', gitOpts)
+  const untracked = execFileSync('git', ['ls-files', '-o', '--exclude-standard'], gitOpts)
   for (const line of untracked.split('\n')) {
     const trimmed = line.trim()
     if (!trimmed) continue
@@ -207,32 +221,32 @@ function collectGitFiles(repoDir: string, prefix: string, files: Set<string>): v
   }
 }
 
-export function getGitVisibleFiles(rootDir: string): Set<string> | null {
+export function getGitVisibleFiles(rootDir: string, excludePatterns?: string[]): Set<string> | null {
   try {
-    const gitRoot = execSync('git rev-parse --show-toplevel', {
+    const gitRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], {
       cwd: rootDir, encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
     }).trim()
 
     if (resolve(gitRoot) !== resolve(rootDir)) {
       try {
-        execSync('git check-ignore -q ' + resolve(rootDir), {
+        execFileSync('git', ['check-ignore', '-q', resolve(rootDir)], {
           cwd: rootDir, encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
         })
         return null
-      } catch {}
+      } catch { /* silent */ }
     }
 
     const files = new Set<string>()
     collectGitFiles(rootDir, '', files)
-    const ig = buildDefaultIgnore(rootDir)
+    const ig = buildDefaultIgnore(rootDir, excludePatterns)
     return new Set([...files].filter(f => !ig.ignores(f)))
   } catch {
     return null
   }
 }
 
-export function scanDirectory(rootDir: string, onProgress?: (current: number, file: string) => void): string[] {
-  const gitFiles = getGitVisibleFiles(rootDir)
+export function scanDirectory(rootDir: string, onProgress?: (current: number, file: string) => void, excludePatterns?: string[]): string[] {
+  const gitFiles = getGitVisibleFiles(rootDir, excludePatterns)
   if (gitFiles) {
     const files: string[] = []
     let count = 0
@@ -245,11 +259,11 @@ export function scanDirectory(rootDir: string, onProgress?: (current: number, fi
     }
     return files
   }
-  return scanDirectoryWalk(rootDir, onProgress)
+  return scanDirectoryWalk(rootDir, onProgress, excludePatterns)
 }
 
-export async function scanDirectoryAsync(rootDir: string, onProgress?: (current: number, file: string) => void): Promise<string[]> {
-  const gitFiles = getGitVisibleFiles(rootDir)
+export async function scanDirectoryAsync(rootDir: string, onProgress?: (current: number, file: string) => void, excludePatterns?: string[]): Promise<string[]> {
+  const gitFiles = getGitVisibleFiles(rootDir, excludePatterns)
   if (gitFiles) {
     const files: string[] = []
     let count = 0
@@ -263,7 +277,7 @@ export async function scanDirectoryAsync(rootDir: string, onProgress?: (current:
     }
     return files
   }
-  return scanDirectoryWalk(rootDir, onProgress)
+  return scanDirectoryWalk(rootDir, onProgress, excludePatterns)
 }
 
 interface ScopedIgnore {
@@ -271,7 +285,7 @@ interface ScopedIgnore {
   ig: Ignore
 }
 
-function scanDirectoryWalk(rootDir: string, onProgress?: (current: number, file: string) => void): string[] {
+function scanDirectoryWalk(rootDir: string, onProgress?: (current: number, file: string) => void, excludePatterns?: string[]): string[] {
   const files: string[] = []
   let count = 0
   const visitedDirs = new Set<string>()
@@ -280,7 +294,7 @@ function scanDirectoryWalk(rootDir: string, onProgress?: (current: number, file:
     try {
       const giPath = join(dir, '.gitignore')
       if (existsSync(giPath)) return { dir, ig: ignore().add(readFileSync(giPath, 'utf-8')) }
-    } catch {}
+    } catch { /* silent */ }
     return null
   }
 
@@ -326,7 +340,7 @@ function scanDirectoryWalk(rootDir: string, onProgress?: (current: number, file:
     }
   }
 
-  walk(rootDir, [{ dir: rootDir, ig: buildDefaultIgnore(rootDir) }])
+  walk(rootDir, [{ dir: rootDir, ig: buildDefaultIgnore(rootDir, excludePatterns) }])
   return files
 }
 
@@ -340,7 +354,7 @@ interface GitChanges {
 
 function getGitChangedFiles(rootDir: string): GitChanges | null {
   try {
-    const output = execSync('git status --porcelain --no-renames', {
+    const output = execFileSync('git', ['status', '--porcelain', '--no-renames'], {
       cwd: rootDir, encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
     })
 
@@ -409,7 +423,7 @@ export function findFiles(root: string, isIgnored: (path: string) => boolean): s
         } else if (s.isFile() && isSupportedFile(fullPath)) {
           result.push(fullPath)
         }
-      } catch {}
+      } catch { /* silent */ }
     }
   }
 

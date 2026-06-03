@@ -176,7 +176,7 @@ export function findTxBoundaryConflicts(queries: QueryManager, moduleId: string)
           })
         }
       }
-    } catch {}
+    } catch { /* silent */ }
   }
 
   return conflicts

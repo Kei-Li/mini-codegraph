@@ -1,6 +1,7 @@
 import { readFileSync, statSync, existsSync, readdirSync } from 'node:fs'
-import { relative, join, extname } from 'node:path'
+import { relative, join, extname, resolve } from 'node:path'
 import { Worker } from 'node:worker_threads'
+import { cpus } from 'node:os'
 import type Parser from 'web-tree-sitter'
 import type { DatabaseConnection } from '../db/connection.js'
 import type { QueryManager } from '../db/queries.js'
@@ -10,7 +11,8 @@ import { parseTypeScriptFile } from './languages/typescript.js'
 import { parsePythonFile } from './languages/python.js'
 import { parseVueFile } from './languages/vue.js'
 import { scanDirectory, findFiles, computeContentHash, languageForFile, validatePathWithinRoot } from '../utils.js'
-import type { MiniCodeGraphNode, MiniCodeGraphEdge, FileRecord, ExtractionResult, ModuleInfo, UnresolvedReference, MessageQueueBinding } from '../types.js'
+import type { MiniCodeGraphNode, MiniCodeGraphEdge, FileRecord, ExtractionResult, ModuleInfo, MessageQueueBinding } from '../types.js'
+import type { WorkerResponse } from './worker-types.js'
 import { runResolutionPipeline, extractFileAnnotations, parseAndStoreVueTemplates } from '../resolution/index.js'
 import { indexMyBatisMappers, findMyBatisMapperDir } from './mybatis-extractor.js'
 import { detectSpring } from '../resolution/frameworks/java.js'
@@ -42,6 +44,10 @@ import { indexGraphQLEndpoints } from './graphql-extractor.js'
 import { indexWebSocketEndpoints } from './websocket-extractor.js'
 import { indexTestAnnotations } from './test-extractor.js'
 import { indexAsyncAnnotations } from './async-extractor.js'
+import { indexReactComponents } from './react-extractor.js'
+import { indexMongoEntities } from './mongo-extractor.js'
+import { indexRedisAnnotations } from './redis-extractor.js'
+import { indexSQLStatements } from './sql-extractor.js'
 import { indexAopAnnotations, resolvePointcutMatches } from './aop-extractor.js'
 import { indexSecurityFilterChains, indexWebSecurityCustomizer } from './security-filter-extractor.js'
 import { indexK8sNetworkResources } from './k8s-network-extractor.js'
@@ -51,6 +57,39 @@ import { indexStreamFunctions } from './stream-function-extractor.js'
 import { indexJpaCustomQueries } from './jpa-query-extractor.js'
 import { indexProfileAnnotations } from './profile-extractor.js'
 
+export function sourceIncludesAny(source: string, keywords: string[]): boolean {
+  for (const kw of keywords) {
+    if (source.includes(kw)) return true
+  }
+  return false
+}
+
+export const EXTRACTOR_GUARDS: Record<string, string[]> = {
+  jpa: ['@Entity', '@Table(', '@Column(', '@Id', '@GeneratedValue', '@ManyToOne', '@OneToMany', '@JoinColumn', '@JoinTable'],
+  security: ['@PreAuthorize', '@Secured', '@RolesAllowed', '@WithMockUser'],
+  batch: ['@EnableBatchProcessing', '@JobScope', '@StepScope'],
+  resilience: ['@CircuitBreaker', '@Retry', '@Bulkhead', '@RateLimiter', '@TimeLimiter'],
+  lombok: ['@Data', '@Getter', '@Setter', '@AllArgsConstructor', '@NoArgsConstructor', '@Builder', '@Slf4j', '@Log4j', '@Value', '@ToString', '@EqualsAndHashCode'],
+  mapstruct: ['@Mapper', '@Mapping'],
+  graphql: ['@QueryMapping', '@MutationMapping', '@SchemaMapping', '@GraphQlController', '@GraphQl'],
+  websocket: ['@MessageController', '@MessageMapping', '@SendToUser'],
+  test: ['@Test', '@SpringBootTest', '@MockBean', '@InjectMocks', '@BeforeEach', '@BeforeAll', '@ExtendWith'],
+  async: ['@Async', '@EnableAsync', '@Scheduled', '@EnableScheduling'],
+  aop: ['@Aspect', '@Pointcut', '@Around', '@Before(', '@After(', '@AfterReturning', '@AfterThrowing'],
+  securityFilter: ['@SecurityFilterChain', '@WebSecurityConfigurer'],
+  controllerAdvice: ['@ControllerAdvice', '@RestControllerAdvice', '@ExceptionHandler'],
+  interceptor: ['@Interceptor', '@HandlerInterceptor', '@WebMvcConfigurer'],
+  jpaQuery: ['@Query(', '@NamedQuery', '@NamedNativeQuery', '@Modifying'],
+  profile: ['@Profile', '@Conditional(', '@ConditionalOnProperty'],
+  redis: ['@RedisHash', '@Cacheable', '@CacheEvict', '@CachePut', '@Caching'],
+}
+
+export function shouldRunExtractor(source: string, name: string): boolean {
+  const keywords = EXTRACTOR_GUARDS[name]
+  if (!keywords) return true
+  return sourceIncludesAny(source, keywords)
+}
+
 export class ExtractionOrchestrator {
   private grammarLoader: GrammarLoader
   private db: DatabaseConnection
@@ -58,19 +97,47 @@ export class ExtractionOrchestrator {
   private workerPool: Worker[] = []
   private useWorkers = false
   private parseTimeoutMs = 30000
+  private workerHeartbeats = new Map<number, number>()
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null
 
   constructor(db: DatabaseConnection, queries: QueryManager) {
     this.db = db
     this.queries = queries
     this.grammarLoader = new GrammarLoader()
+    this.enableWorkerPool(Math.max(1, cpus().length - 1))
   }
 
   enableWorkerPool(size = 2): void {
+    if (this.workerPool.length > 0) return
     this.useWorkers = true
     for (let i = 0; i < size; i++) {
       const worker = new Worker(new URL('./parse-worker.js', import.meta.url))
       worker.postMessage({ type: 'init' })
       this.workerPool.push(worker)
+      this.workerHeartbeats.set(i, Date.now())
+      worker.on('message', (msg: any) => {
+        if (msg?.type === 'heartbeat') this.workerHeartbeats.set(i, Date.now())
+      })
+    }
+    if (!this.heartbeatTimer) {
+      this.heartbeatTimer = setInterval(() => {
+        const now = Date.now()
+        for (let i = 0; i < this.workerPool.length; i++) {
+          const last = this.workerHeartbeats.get(i) ?? 0
+          if (now - last > 30000) {
+            console.error(`Worker ${i} unresponsive for 30s, restarting...`)
+            const old = this.workerPool[i]
+            old.terminate()
+            const worker = new Worker(new URL('./parse-worker.js', import.meta.url))
+            worker.postMessage({ type: 'init' })
+            this.workerPool[i] = worker
+            this.workerHeartbeats.set(i, Date.now())
+            worker.on('message', (msg: any) => {
+              if (msg?.type === 'heartbeat') this.workerHeartbeats.set(i, Date.now())
+            })
+          }
+        }
+      }, 10000)
     }
   }
 
@@ -78,8 +145,8 @@ export class ExtractionOrchestrator {
     await this.grammarLoader.init()
   }
 
-  async indexProject(projectRoot: string, moduleId?: string): Promise<ExtractionResult> {
-    const files = scanDirectory(projectRoot)
+  async indexProject(projectRoot: string, moduleId?: string, excludePatterns?: string[], parallelModule?: boolean): Promise<ExtractionResult> {
+    const files = scanDirectory(projectRoot, undefined, excludePatterns)
 
     console.error(`Found ${files.length} supported files to index`)
 
@@ -88,7 +155,6 @@ export class ExtractionOrchestrator {
     const startTime = Date.now()
 
     const mid = moduleId || 'default'
-
     const updateProgress = () => {
       const pct = ((indexedCount / files.length) * 100).toFixed(1)
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
@@ -98,19 +164,32 @@ export class ExtractionOrchestrator {
       process.stderr.write(`\r[${bar}] ${pct}% (${indexedCount}/${files.length}) ${elapsed}s`)
     }
 
-    for (const filePath of files) {
-      try {
-        const fileResult = await this.indexFile(filePath, projectRoot, mid)
-        result.nodes.push(...fileResult.nodes)
-        result.edges.push(...fileResult.edges)
-        result.errors.push(...fileResult.errors)
-        indexedCount++
-        updateProgress()
-      } catch (e) {
-        result.errors.push(`Error indexing ${filePath}: ${e}`)
-        indexedCount++
-        updateProgress()
+    const BATCH = 200
+    const TX_SIZE = 10000
+    this.queries.enableBatchMode()
+    if (!parallelModule) this.db.exec('BEGIN')
+    try {
+      for (let i = 0; i < files.length; i += BATCH) {
+        const batch = files.slice(i, i + BATCH)
+        const batchResults = await Promise.all(batch.map(f => this.indexFileWorker(f, projectRoot, mid)))
+        for (const fileResult of batchResults) {
+          result.nodes.push(...fileResult.nodes)
+          result.edges.push(...fileResult.edges)
+          result.errors.push(...fileResult.errors)
+          indexedCount++
+          updateProgress()
+        }
+        if (!parallelModule && indexedCount % TX_SIZE === 0 && indexedCount < files.length) {
+          this.queries.flushBatch()
+          this.db.exec('COMMIT')
+          this.db.exec('BEGIN')
+        }
       }
+      this.queries.flushBatch()
+      if (!parallelModule) this.db.exec('COMMIT')
+    } catch (e) {
+      if (!parallelModule) this.db.exec('ROLLBACK')
+      result.errors.push(`Batch transaction error: ${e}`)
     }
 
     const totalTime = ((Date.now() - startTime) / 1000).toFixed(1)
@@ -160,15 +239,21 @@ export class ExtractionOrchestrator {
       process.stderr.write(`  Found ${gatewayRoutes.length} gateway routes\n`)
     }
 
-    const mqFiles = findFiles(projectRoot, (_: string) => false)
-      .filter(f => f.endsWith('.java') || f.endsWith('.yml') || f.endsWith('.yaml'))
+    const mqFiles = files.filter(f => f.endsWith('.java') || f.endsWith('.yml') || f.endsWith('.yaml'))
     const allMqBindings: MessageQueueBinding[] = []
     for (const mf of mqFiles) {
       try {
         const mqSource = readFileSync(mf, 'utf-8')
+        if (!mqSource.includes('@EnableBinding') && !mqSource.includes('StreamBridge') &&
+            !mqSource.includes('spring.cloud.stream') && !mqSource.includes('rabbit') &&
+            !mqSource.includes('kafka') && !mqSource.includes('jms') &&
+            !mqSource.includes('pulsar') && !mqSource.includes('@JmsListener') &&
+            !mqSource.includes('@RabbitListener') && !mqSource.includes('@KafkaListener')) {
+          continue
+        }
         const bindings = indexQueueBindings(this.queries, mqSource, relative(projectRoot, mf).replace(/\\/g, '/'), mid)
         allMqBindings.push(...bindings)
-      } catch {}
+      } catch (e) { console.error(`  Failed to read MQ file ${mf}: ${e}`) }
     }
     if (allMqBindings.length > 0) {
       process.stderr.write(`  Found ${allMqBindings.length} MQ bindings\n`)
@@ -261,25 +346,29 @@ export class ExtractionOrchestrator {
     return result
   }
 
-  async indexMultiModule(parentDir: string): Promise<ExtractionResult> {
+  async indexMultiModule(parentDir: string, excludePatterns?: string[]): Promise<ExtractionResult> {
     const result: ExtractionResult = { nodes: [], edges: [], errors: [] }
     const modules = await this.discoverModules(parentDir)
 
     if (modules.length === 0) {
       console.error('No sub-modules found. Indexing as single project.')
-      return this.indexProject(parentDir, 'default')
+      return this.indexProject(parentDir, 'default', excludePatterns)
     }
 
     console.error(`Found ${modules.length} sub-modules: ${modules.map(m => m.name).join(', ')}`)
 
+    this.queries.enableBatchMode()
     for (const mod of modules) {
-      console.error(`\nIndexing module: ${mod.name} (${mod.rootPath})`)
       this.queries.insertModule(mod)
+    }
 
-      const moduleResult = await this.indexProject(mod.rootPath, mod.id)
-      result.nodes.push(...moduleResult.nodes)
-      result.edges.push(...moduleResult.edges)
-      result.errors.push(...moduleResult.errors)
+    const moduleResults = await Promise.all(
+      modules.map(mod => this.indexProject(mod.rootPath, mod.id, excludePatterns, true))
+    )
+    for (const mr of moduleResults) {
+      result.nodes.push(...mr.nodes)
+      result.edges.push(...mr.edges)
+      result.errors.push(...mr.errors)
     }
 
     const allModuleIds = modules.map(m => m.id)
@@ -326,7 +415,7 @@ export class ExtractionOrchestrator {
           const vfSource = readFileSync(vf, 'utf-8')
           const calls = extractVueApiCalls(vfSource, relative(vm.rootPath, vf).replace(/\\/g, '/'))
           allApiCalls.push(...calls)
-        } catch {}
+        } catch (e) { console.error(`  Failed to extract API calls from ${vf}: ${e}`) }
       }
       const apiMappings = resolveVueApiToController(this.queries, allApiCalls, vm.id)
       if (apiMappings.length > 0) {
@@ -456,74 +545,92 @@ export class ExtractionOrchestrator {
             ? parseVueFile(parser, source, relPath, lang.name)
             : parseTypeScriptFile(tree, source, relPath, lang.name)
 
-      this.db.transaction(() => {
-        this.queries.deleteNodesForFile(relPath)
+      this.queries.deleteNodesForFile(relPath)
 
-        const nodeMap = new Map<string, MiniCodeGraphNode>()
-        for (const ni of parseResult.nodes) {
-          const node: MiniCodeGraphNode = {
-            id: `${relPath}:${ni.name}:${ni.startLine}`,
-            kind: ni.kind,
-            name: ni.name,
-            qualifiedName: ni.qualifiedName,
-            filePath: relPath,
-            language: lang.name,
-            startLine: ni.startLine,
-            endLine: ni.endLine,
-            startColumn: ni.startColumn,
-            endColumn: ni.endColumn,
-            docstring: ni.docstring,
-            signature: ni.signature,
-            visibility: ni.visibility,
-            isExported: ni.isExported,
-            parentId: ni.parentId,
-            moduleId: mid,
-          }
-          nodeMap.set(node.id, node)
-          this.queries.insertNode(node)
-        }
-
-        for (const ei of parseResult.edges) {
-          this.queries.insertEdge(ei.source, ei.target, ei.kind, ei.metadata, ei.line, ei.col)
-        }
-
-        this.queries.upsertFile({
-          path: relPath,
-          contentHash,
+      const nodeMap = new Map<string, MiniCodeGraphNode>()
+      for (const ni of parseResult.nodes) {
+        const node: MiniCodeGraphNode = {
+          id: `${relPath}:${ni.name}:${ni.startLine}`,
+          kind: ni.kind,
+          name: ni.name,
+          qualifiedName: ni.qualifiedName,
+          filePath: relPath,
           language: lang.name,
-          size: stat.size,
-          modifiedAt: stat.mtimeMs,
-          indexedAt: Date.now(),
-          nodeCount: parseResult.nodes.length,
+          startLine: ni.startLine,
+          endLine: ni.endLine,
+          startColumn: ni.startColumn,
+          endColumn: ni.endColumn,
+          docstring: ni.docstring,
+          signature: ni.signature,
+          visibility: ni.visibility,
+          isExported: ni.isExported,
+          parentId: ni.parentId,
           moduleId: mid,
-        })
+        }
+        nodeMap.set(node.id, node)
+        this.queries.insertNode(node)
+      }
+
+      for (const ei of parseResult.edges) {
+        this.queries.insertEdge(ei.source, ei.target, ei.kind, ei.metadata, ei.line, ei.col)
+      }
+
+      this.queries.upsertFile({
+        path: relPath,
+        contentHash,
+        language: lang.name,
+        size: stat.size,
+        modifiedAt: stat.mtimeMs,
+        indexedAt: Date.now(),
+        nodeCount: parseResult.nodes.length,
+        moduleId: mid,
       })
 
-      extractFileAnnotations(this.queries, source, relPath, mid)
+      if (source.includes('@')) {
+        extractFileAnnotations(this.queries, source, relPath, mid, parseResult.nodes.map(ni => ({
+          id: `${relPath}:${ni.name}:${ni.startLine}`,
+          name: ni.name,
+          qualifiedName: ni.qualifiedName,
+          filePath: relPath,
+        })))
+      }
 
       if (lang.name === 'java') {
-        indexJpaEntities(this.queries, source, relPath, mid)
-        indexSecurity(this.queries, source, relPath, mid)
-        indexBatchJobs(this.queries, source, relPath, mid)
-        indexResilience(this.queries, source, relPath, mid)
-        indexLombokAnnotations(this.queries, source, relPath, mid)
-        indexMapStructMappers(this.queries, source, relPath, mid)
-        indexGraphQLEndpoints(this.queries, source, relPath, mid)
-        indexWebSocketEndpoints(this.queries, source, relPath, mid)
-        indexTestAnnotations(this.queries, source, relPath, mid)
-        indexAsyncAnnotations(this.queries, source, relPath, mid)
-        indexAopAnnotations(this.queries, source, relPath, mid)
-        indexSecurityFilterChains(this.queries, source, relPath, mid)
-        indexControllerAdvice(this.queries, source, relPath, mid)
-        indexInterceptors(this.queries, source, relPath, mid)
-        indexStreamFunctions(this.queries, source, relPath, mid)
-        indexJpaCustomQueries(this.queries, source, relPath, mid)
-        indexProfileAnnotations(this.queries, source, relPath, mid)
+        if (shouldRunExtractor(source, 'jpa')) indexJpaEntities(this.queries, source, relPath, mid)
+        if (shouldRunExtractor(source, 'security')) indexSecurity(this.queries, source, relPath, mid)
+        if (shouldRunExtractor(source, 'batch')) indexBatchJobs(this.queries, source, relPath, mid)
+        if (shouldRunExtractor(source, 'resilience')) indexResilience(this.queries, source, relPath, mid)
+        if (shouldRunExtractor(source, 'lombok')) indexLombokAnnotations(this.queries, source, relPath, mid)
+        if (shouldRunExtractor(source, 'mapstruct')) indexMapStructMappers(this.queries, source, relPath, mid)
+        if (shouldRunExtractor(source, 'graphql')) indexGraphQLEndpoints(this.queries, source, relPath, mid)
+        if (shouldRunExtractor(source, 'websocket')) indexWebSocketEndpoints(this.queries, source, relPath, mid)
+        if (shouldRunExtractor(source, 'test')) indexTestAnnotations(this.queries, source, relPath, mid)
+        if (shouldRunExtractor(source, 'async')) indexAsyncAnnotations(this.queries, source, relPath, mid)
+        if (shouldRunExtractor(source, 'aop')) indexAopAnnotations(this.queries, source, relPath, mid)
+        if (shouldRunExtractor(source, 'securityFilter')) indexSecurityFilterChains(this.queries, source, relPath, mid)
+        if (shouldRunExtractor(source, 'controllerAdvice')) indexControllerAdvice(this.queries, source, relPath, mid)
+        if (shouldRunExtractor(source, 'interceptor')) indexInterceptors(this.queries, source, relPath, mid)
+        if (shouldRunExtractor(source, 'jpaQuery')) indexJpaCustomQueries(this.queries, source, relPath, mid)
+        if (shouldRunExtractor(source, 'profile')) indexProfileAnnotations(this.queries, source, relPath, mid)
+        if (shouldRunExtractor(source, 'redis')) indexRedisAnnotations(this.queries, source, relPath, mid)
+        if (sourceIncludesAny(source, ['StreamBridge', 'Function<', 'Supplier<', 'Consumer<', 'java.util.function'])) {
+          indexStreamFunctions(this.queries, source, relPath, mid)
+        }
+        if (sourceIncludesAny(source, ['Mongo', 'mongo', 'Document', 'mongodb'])) {
+          indexMongoEntities(this.queries, source, relPath, mid)
+        }
+        if (sourceIncludesAny(source, ['sql', 'SQL', 'Sql', 'jdbc', 'Jdbc', 'PreparedStatement', 'ResultSet', 'Connection', 'DataSource'])) {
+          indexSQLStatements(this.queries, source, relPath, mid)
+        }
       }
 
       if (lang.name === 'vue') {
         parseAndStoreVueTemplates(this.queries, source, relPath, mid)
         indexPiniaStores(this.queries, source, relPath, mid, projectRoot)
+      }
+
+      if (lang.name === 'typescript') {
+        indexReactComponents(this.queries, source, relPath, mid)
       }
 
       return {
@@ -545,7 +652,7 @@ export class ExtractionOrchestrator {
           parentId: ni.parentId,
           moduleId: mid,
         })),
-        edges: parseResult.edges,
+        edges: parseResult.edges.map(e => ({ sourceId: e.source, targetId: e.target, kind: e.kind, metadata: e.metadata, line: e.line, col: e.col })),
         errors: [],
       }
     } catch (e) {
@@ -562,85 +669,128 @@ export class ExtractionOrchestrator {
   async indexFileWorker(
     filePath: string,
     projectRoot: string,
-    moduleId: string
+    moduleId: string,
+    storeToDb = true
   ): Promise<ExtractionResult> {
-    const lang = languageForFile(filePath)
+    const validated = validatePathWithinRoot(projectRoot, filePath)
+    if (!validated) return { nodes: [], edges: [], errors: [`Path rejected: ${filePath} is outside project root ${projectRoot}`] }
+    const absPath = validated
+    const lang = languageForFile(absPath)
     if (!lang || !['java', 'typescript', 'python', 'vue'].includes(lang.name)) {
       return { nodes: [], edges: [], errors: [] }
     }
 
     const worker = this.getNextWorker()
     if (!worker) {
-      return this.indexFile(filePath, projectRoot, moduleId)
+      return this.indexFile(absPath, projectRoot, moduleId)
     }
 
-    return new Promise((resolve) => {
-      const source = readFileSync(filePath, 'utf-8')
-      const stat = statSync(filePath)
-      const contentHash = computeContentHash(source)
-      const relPath = relative(projectRoot, filePath).replace(/\\/g, '/')
+    return new Promise((resolvePromise) => {
+      const relPath = relative(projectRoot, absPath).replace(/\\/g, '/')
       const id = Math.random()
 
       const timeoutId = setTimeout(() => {
         worker.off('message', handler)
-        resolve(this.indexFile(filePath, projectRoot, moduleId))
+        resolvePromise(this.indexFile(absPath, projectRoot, moduleId))
       }, this.parseTimeoutMs)
 
-      const handler = (msg: any) => {
-        if (msg.id === id) {
-          clearTimeout(timeoutId)
-          if (msg.error) {
-            resolve({ nodes: [], edges: [], errors: [`Worker error: ${msg.error}`] })
-            return
-          }
+      const handler = (msg: WorkerResponse) => {
+        if (msg.type !== 'parse-result' || msg.id !== id) return
+        clearTimeout(timeoutId)
+        if (msg.error) {
+          resolvePromise({ nodes: [], edges: [], errors: [`Worker error: ${msg.error}`] })
+          return
+        }
 
-          try {
-            this.db.transaction(() => {
-              this.queries.deleteNodesForFile(relPath)
+        const result = msg.result
+        const src = msg.source ?? ''
+        const fileStat = msg.stat
+        const contentHash = msg.contentHash ?? ''
 
-              for (const ni of msg.result.nodes) {
-                const node: MiniCodeGraphNode = {
-                  id: `${relPath}:${ni.name}:${ni.startLine}`,
-                  kind: ni.kind, name: ni.name,
-                  qualifiedName: ni.qualifiedName,
-                  filePath: relPath, language: lang.name,
-                  startLine: ni.startLine, endLine: ni.endLine,
-                  startColumn: ni.startColumn, endColumn: ni.endColumn,
-                  docstring: ni.docstring ?? '', signature: ni.signature ?? '',
-                  visibility: ni.visibility ?? 'public',
-                  isExported: ni.isExported ?? false,
-                  parentId: ni.parentId, moduleId,
-                }
-                this.queries.insertNode(node)
-              }
+        if (!result || !fileStat) {
+          resolvePromise({ nodes: [], edges: [], errors: ['Worker returned incomplete result'] })
+          return
+        }
 
-              for (const ei of msg.result.edges) {
-                this.queries.insertEdge(ei.source, ei.target, ei.kind, ei.metadata ?? '{}', ei.line, ei.col)
-              }
-
-              this.queries.upsertFile({
-                path: relPath, contentHash, language: lang.name,
-                size: stat.size, modifiedAt: stat.mtimeMs,
-                indexedAt: Date.now(), nodeCount: msg.result.nodes.length,
-                moduleId,
+        try {
+          if (storeToDb) {
+            this.queries.deleteNodesForFile(relPath)
+            for (const ni of result.nodes) {
+              this.queries.insertNode({
+                id: `${relPath}:${ni.name}:${ni.startLine}`,
+                kind: ni.kind, name: ni.name,
+                qualifiedName: ni.qualifiedName,
+                filePath: relPath, language: lang.name,
+                startLine: ni.startLine, endLine: ni.endLine,
+                startColumn: ni.startColumn, endColumn: ni.endColumn,
+                docstring: ni.docstring ?? '', signature: ni.signature ?? '',
+                visibility: ni.visibility ?? 'public',
+                isExported: ni.isExported ?? false,
+                parentId: ni.parentId, moduleId,
               })
-            })
-
-            extractFileAnnotations(this.queries, source, relPath, moduleId)
-            if (lang.name === 'vue') {
-              parseAndStoreVueTemplates(this.queries, source, relPath, moduleId)
             }
-
-            resolve({
-              nodes: msg.result.nodes.map((ni: any) => ({
-                ...ni, id: `${relPath}:${ni.name}:${ni.startLine}`, filePath: relPath, language: lang.name, moduleId,
-              })),
-              edges: msg.result.edges,
-              errors: [],
+            for (const ei of result.edges) {
+              this.queries.insertEdge(ei.source, ei.target, ei.kind, ei.metadata ?? '{}', ei.line, ei.col)
+            }
+            this.queries.upsertFile({
+              path: relPath, contentHash, language: lang.name,
+              size: fileStat.size, modifiedAt: fileStat.mtimeMs,
+              indexedAt: Date.now(), nodeCount: result.nodes.length,
+              moduleId,
             })
-          } catch (e) {
-            resolve({ nodes: [], edges: [], errors: [`DB error: ${e}`] })
           }
+
+          if (storeToDb) {
+            if (src.includes('@')) {
+              extractFileAnnotations(this.queries, src, relPath, moduleId, result.nodes.map(ni => ({
+                id: `${relPath}:${ni.name}:${ni.startLine}`,
+                name: ni.name,
+                qualifiedName: ni.qualifiedName,
+                filePath: relPath,
+              })))
+            }
+            if (lang.name === 'java') {
+              if (shouldRunExtractor(src, 'jpa')) indexJpaEntities(this.queries, src, relPath, moduleId)
+              if (shouldRunExtractor(src, 'security')) indexSecurity(this.queries, src, relPath, moduleId)
+              if (shouldRunExtractor(src, 'batch')) indexBatchJobs(this.queries, src, relPath, moduleId)
+              if (shouldRunExtractor(src, 'resilience')) indexResilience(this.queries, src, relPath, moduleId)
+              if (shouldRunExtractor(src, 'lombok')) indexLombokAnnotations(this.queries, src, relPath, moduleId)
+              if (shouldRunExtractor(src, 'mapstruct')) indexMapStructMappers(this.queries, src, relPath, moduleId)
+              if (shouldRunExtractor(src, 'graphql')) indexGraphQLEndpoints(this.queries, src, relPath, moduleId)
+              if (shouldRunExtractor(src, 'websocket')) indexWebSocketEndpoints(this.queries, src, relPath, moduleId)
+              if (shouldRunExtractor(src, 'test')) indexTestAnnotations(this.queries, src, relPath, moduleId)
+              if (shouldRunExtractor(src, 'async')) indexAsyncAnnotations(this.queries, src, relPath, moduleId)
+              if (shouldRunExtractor(src, 'aop')) indexAopAnnotations(this.queries, src, relPath, moduleId)
+              if (shouldRunExtractor(src, 'securityFilter')) indexSecurityFilterChains(this.queries, src, relPath, moduleId)
+              if (shouldRunExtractor(src, 'controllerAdvice')) indexControllerAdvice(this.queries, src, relPath, moduleId)
+              if (shouldRunExtractor(src, 'interceptor')) indexInterceptors(this.queries, src, relPath, moduleId)
+              if (shouldRunExtractor(src, 'jpaQuery')) indexJpaCustomQueries(this.queries, src, relPath, moduleId)
+              if (shouldRunExtractor(src, 'profile')) indexProfileAnnotations(this.queries, src, relPath, moduleId)
+              if (shouldRunExtractor(src, 'redis')) indexRedisAnnotations(this.queries, src, relPath, moduleId)
+              if (sourceIncludesAny(src, ['StreamBridge', 'Function<', 'Supplier<', 'Consumer<', 'java.util.function'])) {
+                indexStreamFunctions(this.queries, src, relPath, moduleId)
+              }
+              if (sourceIncludesAny(src, ['Mongo', 'mongo', 'Document', 'mongodb'])) {
+                indexMongoEntities(this.queries, src, relPath, moduleId)
+              }
+              if (sourceIncludesAny(src, ['sql', 'SQL', 'Sql', 'jdbc', 'Jdbc', 'PreparedStatement', 'ResultSet', 'Connection', 'DataSource'])) {
+                indexSQLStatements(this.queries, src, relPath, moduleId)
+              }
+            }
+            if (lang.name === 'vue') {
+              parseAndStoreVueTemplates(this.queries, src, relPath, moduleId)
+            }
+          }
+
+          resolvePromise({
+            nodes: result.nodes.map(ni => ({
+              ...ni, id: `${relPath}:${ni.name}:${ni.startLine}`, filePath: relPath, language: lang.name, moduleId,
+            })),
+            edges: result.edges.map(e => ({ sourceId: e.source, targetId: e.target, kind: e.kind, metadata: e.metadata, line: e.line, col: e.col })),
+            errors: [],
+          })
+        } catch (e) {
+          resolvePromise({ nodes: [], edges: [], errors: [`DB error: ${e}`] })
         }
       }
 
@@ -649,7 +799,7 @@ export class ExtractionOrchestrator {
         type: 'parse',
         id,
         filePath: relPath,
-        content: source,
+        absolutePath: absPath,
         grammarName: lang.grammarName,
         language: lang.name,
       })
@@ -657,10 +807,12 @@ export class ExtractionOrchestrator {
   }
 
   stopWorkers(): void {
+    if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null }
     for (const worker of this.workerPool) {
       worker.postMessage({ type: 'shutdown' })
     }
     this.workerPool = []
+    this.workerHeartbeats.clear()
   }
 
   private async discoverModules(parentDir: string): Promise<ModuleInfo[]> {
@@ -681,7 +833,7 @@ export class ExtractionOrchestrator {
           if (deps.vue || deps.nuxt) language = 'vue'
           else if (deps.react || deps.next) language = 'typescript'
           else language = 'typescript'
-        } catch {}
+        } catch (e) { console.error(`  Failed to parse package.json: ${e}`) }
       }
 
       modules.push({
@@ -706,7 +858,7 @@ export class ExtractionOrchestrator {
             tryAddModule(modulePath, 'maven')
           }
         }
-      } catch {}
+      } catch (e) { console.error(`  Failed to read pom.xml: ${e}`) }
     }
 
     const settingsGradle = join(parentDir, 'settings.gradle')
@@ -722,7 +874,7 @@ export class ExtractionOrchestrator {
             tryAddModule(modulePath, 'gradle')
           }
         }
-      } catch {}
+      } catch (e) { console.error(`  Failed to read settings.gradle: ${e}`) }
     }
 
     const entries = readdirSync(parentDir, { withFileTypes: true })

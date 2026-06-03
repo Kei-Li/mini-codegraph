@@ -32,16 +32,19 @@ export function parseMyBatisXmlFile(filePath: string, projectRoot: string): MyBa
 
     const statementTypes = ['select', 'insert', 'update', 'delete']
     for (const stmtType of statementTypes) {
-      const pattern = new RegExp(
-        `<${stmtType}\\s+[^>]*?id\\s*=\\s*["']([^"']+)["'][^>]*?(?:parameterType\\s*=\\s*["']([^"']+)["'])?[^>]*?(?:resultType\\s*=\\s*["']([^"']+)["'])?[^>]*?>`,
-        'g'
-      )
+      const tagRegex = new RegExp(`<${stmtType}\\s+([^>]*)>`, 'g')
+      const idRegex = /id\s*=\s*["']([^"']+)["']/
+      const paramRegex = /parameterType\s*=\s*["']([^"']+)["']/
+      const resultRegex = /resultType\s*=\s*["']([^"']+)["']/
 
       let m: RegExpExecArray | null
-      while ((m = pattern.exec(content)) !== null) {
-        const id = m[1]
-        const parameterType = m[2] ?? ''
-        const resultType = m[3] ?? ''
+      while ((m = tagRegex.exec(content)) !== null) {
+        const attrs = m[1]
+        const idMatch = attrs.match(idRegex)
+        if (!idMatch) continue
+        const id = idMatch[1]
+        const parameterType = attrs.match(paramRegex)?.[1] ?? ''
+        const resultType = attrs.match(resultRegex)?.[1] ?? ''
         const lineNum = content.substring(0, m.index).split('\n').length
 
         const startIdx = m.index

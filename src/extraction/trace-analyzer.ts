@@ -9,7 +9,7 @@ export function buildFullTraces(queries: QueryManager): FullTrace[] {
   for (const apiEdge of apiMappingEdges) {
     const trace: FullTraceHop[] = []
     let meta: any = {}
-    try { meta = JSON.parse(apiEdge.metadata ?? '{}') } catch {}
+    try { meta = JSON.parse(apiEdge.metadata ?? '{}') } catch { /* silent */ }
 
     trace.push({
       kind: 'vue_api_call',

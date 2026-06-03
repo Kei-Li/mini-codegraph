@@ -26,7 +26,7 @@ export function runQualifiedSearch(
     results = results.filter(r => r.node.language === parsed.language)
   }
   if (parsed.file) {
-    const regex = new RegExp(parsed.file.replace(/\*/g, '.*'), 'i')
+    const regex = new RegExp(parsed.file.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*'), 'i')
     results = results.filter(r => regex.test(r.node.filePath))
   }
   if (parsed.name) {

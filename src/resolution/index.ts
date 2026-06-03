@@ -209,7 +209,7 @@ export class ReferenceResolver {
       if (['typescript', 'vue'].includes(language)) {
         return extractTypeScriptImports(content, filePath)
       }
-    } catch {}
+    } catch { /* silent */ }
 
     return []
   }
@@ -248,14 +248,14 @@ export function extractFileAnnotations(
   queries: QueryManager,
   source: string,
   filePath: string,
-  moduleId: string
+  moduleId: string,
+  fileNodes?: { id: string; name: string; qualifiedName: string; filePath: string }[]
 ): void {
-  const lines = source.split('\n')
   const annotationPattern = /@(\w+)\s*(?:\(([^)]*)\))?/g
   const nodeLookup = new Map<string, string>()
 
-  const fileNodes = queries.getNodesByFile(filePath)
-  for (const n of fileNodes) {
+  const nodes = fileNodes ?? queries.getNodesByFile(filePath)
+  for (const n of nodes) {
     nodeLookup.set(n.name, n.id)
     const simple = n.qualifiedName.split('.').pop() || n.name
     if (simple !== n.name) nodeLookup.set(simple, n.id)
@@ -271,14 +271,31 @@ export function extractFileAnnotations(
     return null
   }
 
+  const lineStarts: number[] = [0]
+  function getLine(n: number): string {
+    while (lineStarts.length <= n + 1) {
+      const last = lineStarts[lineStarts.length - 1]
+      const next = source.indexOf('\n', last)
+      lineStarts.push(next === -1 ? source.length : next + 1)
+    }
+    const start = lineStarts[n]
+    const end = lineStarts[n + 1]
+    return end > start ? source.slice(start, source[end - 1] === '\n' ? end - 1 : end) : ''
+  }
+
+  let lastIndex = 0
+  let lineNum = 1
   let m: RegExpExecArray | null
   while ((m = annotationPattern.exec(source)) !== null) {
     const annName = m[1]
     const annValue = m[2]?.trim() ?? ''
-    const lineNum = source.substring(0, m.index).split('\n').length + 1
+    for (let i = lastIndex; i < m.index; i++) {
+      if (source[i] === '\n') lineNum++
+    }
+    lastIndex = m.index
 
-    for (let j = lineNum - 1; j < Math.min(lineNum + 4, lines.length); j++) {
-      const declLine = lines[j]?.trim() ?? ''
+    for (let j = lineNum - 1; j < lineNum + 4; j++) {
+      const declLine = getLine(j).trim()
       if (declLine && !declLine.startsWith('@') && !declLine.startsWith('import') && !declLine.startsWith('package')) {
         const matchedName = extractDeclName(declLine)
         if (matchedName) {

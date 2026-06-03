@@ -69,7 +69,7 @@ export function indexAopAnnotations(
       const exprMatch = fullSrc.match(/@Pointcut\s*\(\s*["']([^"']+)["']/)
       if (!exprMatch) continue
 
-      const methodLine = lines[j]
+      const methodLine = findMethodLine(lines, j + 1) || lines[j]
       const nameMatch = methodLine.match(/(?:public\s+)?void\s+(\w+)\s*\(/)
       if (nameMatch) {
         pointcuts.push({

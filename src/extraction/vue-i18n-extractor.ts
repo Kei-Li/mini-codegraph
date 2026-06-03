@@ -33,7 +33,7 @@ export function parseI18nLocaleFile(filePath: string): { key: string; value: str
         if (m) results.push({ key: m[1], value: m[2] })
       }
     }
-  } catch {}
+  } catch { /* silent */ }
   return results
 }
 
@@ -93,7 +93,7 @@ export function indexI18n(
             JSON.stringify({ locale: msg.locale, key: msg.key, value: msg.value }), 0, 0)
         }
       }
-    } catch {}
+    } catch { /* silent */ }
   }
 
   return allMessages

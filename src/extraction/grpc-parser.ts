@@ -182,7 +182,7 @@ export function indexGrpcProtoFiles(
       }
 
       allMessages.push(...messages)
-    } catch {}
+    } catch { /* silent */ }
   }
 
   return { services: allServices, messages: allMessages }
@@ -201,9 +201,9 @@ function readdirRecursive(dir: string): string[] {
         } else {
           result.push(fullPath)
         }
-      } catch {}
+      } catch { /* silent */ }
     }
-  } catch {}
+  } catch { /* silent */ }
   return result
 }
 
@@ -228,7 +228,7 @@ export function findProtoDir(projectRoot: string): string | null {
         const customDir = join(projectRoot, protoDirMatch[1].trim())
         if (existsSync(customDir)) return customDir
       }
-    } catch {}
+    } catch { /* silent */ }
   }
 
   return null

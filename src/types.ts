@@ -34,8 +34,8 @@ export interface MiniCodeGraphNode {
 }
 
 export interface MiniCodeGraphEdge {
-  source: string
-  target: string
+  sourceId: string
+  targetId: string
   kind: string
   metadata: string
   line: number

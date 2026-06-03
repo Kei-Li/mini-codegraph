@@ -2,6 +2,17 @@ import type { Transport } from './types.js'
 import type { GraphQueryManager } from '../graph/queries.js'
 import { createTools, type ToolDefinition } from './tools.js'
 
+const MAX_OUTPUT_LENGTH = 15_000
+
+function truncateOutput(text: string): string {
+  if (text.length <= MAX_OUTPUT_LENGTH) return text
+
+  const truncated = text.slice(0, MAX_OUTPUT_LENGTH)
+  const lastNewline = truncated.lastIndexOf('\n')
+  const cutPoint = lastNewline > MAX_OUTPUT_LENGTH * 0.8 ? lastNewline : MAX_OUTPUT_LENGTH
+  return truncated.slice(0, cutPoint) + '\n... (output truncated)'
+}
+
 export interface JSONRPCRequest {
   jsonrpc: '2.0'
   id: number | string
@@ -21,6 +32,7 @@ export class MCPServer {
   private graph: GraphQueryManager
   private tools: ToolDefinition[] = []
   private initialized = false
+  private getPendingFiles: () => { path: string; firstSeenMs: number; lastSeenMs: number; indexing: boolean }[]
 
   constructor(
     transport: Transport,
@@ -29,6 +41,7 @@ export class MCPServer {
   ) {
     this.transport = transport
     this.graph = graph
+    this.getPendingFiles = getPendingFiles ?? (() => [])
     this.tools = createTools(graph, getPendingFiles)
   }
 
@@ -107,15 +120,21 @@ export class MCPServer {
 
           try {
             const result = await tool.handler(toolArgs, this.graph)
-            const warning = this.graph.getStalenessWarning()
-            if (warning) {
-              result._warning = warning
+            const pending = this.getPendingFiles()
+            if (pending.length > 0) {
+              result._staleness = {
+                pendingFiles: pending.length,
+                warning: `${pending.length} file(s) pending sync. Results may be stale. Run 'mini-cg sync' to update.`,
+                sample: pending.slice(0, 5).map(f => f.path),
+              }
             }
+            const textContent = typeof result === 'string' ? result : JSON.stringify(result, null, 2)
             this.sendResponse(id, {
-              content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+              content: [{ type: 'text', text: truncateOutput(textContent) }],
             })
           } catch (e: any) {
-            this.sendError(id, -32603, `Tool execution error: ${e.message ?? e}`)
+            console.error('Tool execution error:', e)
+            this.sendError(id, -32603, 'Internal server error')
           }
           break
         }
@@ -135,7 +154,8 @@ export class MCPServer {
           this.sendError(id, -32601, `Method not found: ${method}`)
       }
     } catch (e: any) {
-      this.sendError(id, -32603, `Internal error: ${e.message ?? e}`)
+      console.error('Internal error:', e)
+      this.sendError(id, -32603, 'Internal server error')
     }
   }
 
@@ -159,4 +179,3 @@ export class MCPServer {
     process.exit(0)
   }
 }
-

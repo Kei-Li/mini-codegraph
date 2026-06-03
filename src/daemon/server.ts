@@ -80,7 +80,7 @@ export class DaemonServer {
     logInfo(`Daemon stopping${reason ? `: ${reason}` : ''}`)
     this.clearTimers()
     for (const [socket] of this.clients) {
-      try { socket.destroy() } catch {}
+      try { socket.destroy() } catch { /* silent */ }
     }
     this.clients.clear()
     this.server?.close(() => {
@@ -127,7 +127,7 @@ export class DaemonServer {
       pid: process.pid,
       protocol: DAEMON_PROTOCOL_VERSION,
     })
-    try { socket.write(hello + '\n') } catch {}
+    try { socket.write(hello + '\n') } catch { /* silent */ }
   }
 
   private startPpidWatchdog(): void {
@@ -183,14 +183,14 @@ export class DaemonServer {
   }
 
   private cleanupStaleSocket(): void {
-    try { unlinkSync(this.socketPath) } catch {}
+    try { unlinkSync(this.socketPath) } catch { /* silent */ }
   }
 
   private cleanupFiles(): void {
-    try { unlinkSync(join(this.dataDir, 'daemon.port')) } catch {}
-    try { unlinkSync(join(this.dataDir, 'daemon.pid')) } catch {}
-    try { unlinkSync(join(this.dataDir, 'daemon.lock')) } catch {}
-    try { unlinkSync(this.socketPath) } catch {}
+    try { unlinkSync(join(this.dataDir, 'daemon.port')) } catch { /* silent */ }
+    try { unlinkSync(join(this.dataDir, 'daemon.pid')) } catch { /* silent */ }
+    try { unlinkSync(join(this.dataDir, 'daemon.lock')) } catch { /* silent */ }
+    try { unlinkSync(this.socketPath) } catch { /* silent */ }
   }
 
   private writePortFile(): void {
@@ -242,7 +242,7 @@ class DaemonSocketTransport implements Transport {
           const msg = JSON.parse(line)
           if (msg.type === 'hello') continue
           this.onMessage?.(msg)
-        } catch {}
+        } catch { /* silent */ }
       }
     })
     socket.on('close', () => this.onClose?.())
@@ -257,7 +257,7 @@ class DaemonSocketTransport implements Transport {
   send(response: any): void {
     try {
       this.socket.write(JSON.stringify(response) + '\n')
-    } catch {}
+    } catch { /* silent */ }
   }
 
   stop(): void {

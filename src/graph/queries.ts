@@ -3,6 +3,7 @@ import type { MiniCodeGraphNode } from '../types.js'
 import { GraphTraverser } from './traversal.js'
 import { CodeAnalyzer } from '../analysis/index.js'
 import { runQualifiedSearch, fuzzySearchFallback } from '../search/index.js'
+import { safeJsonParse } from '../utils.js'
 
 export class GraphQueryManager {
   private queries: QueryManager
@@ -103,7 +104,7 @@ export class GraphQueryManager {
     return this.traverser.findMicroserviceArchitecture()
   }
 
-  getFeignClients(): {
+  getFeignClients(limit?: number): {
     feignClient: MiniCodeGraphNode
     feignMethods: MiniCodeGraphNode[]
     annotations: { annotationName: string; value: string }[]
@@ -114,29 +115,33 @@ export class GraphQueryManager {
       annotations: { annotationName: string; value: string }[]
     }[] = []
 
-    const feignAnnotated = this.queries.getNodesByAnnotation('FeignClient')
+    const feignAnnotated = this.queries.getNodesByAnnotation('FeignClient', limit)
     for (const node of feignAnnotated) {
+      if (limit && results.length >= limit) break
       const children = this.queries.getChildren(node.id)
       const annotations = this.queries.getAnnotationsByNode(node.id)
       results.push({ feignClient: node, feignMethods: children, annotations })
     }
 
-    const clientInterfaces = this.queries.getNodesByKind('interface')
-      .filter(n => n.name.endsWith('Client'))
+    if (!limit || results.length < limit) {
+      const clientInterfaces = this.queries.getNodesByKind('interface')
+        .filter(n => n.name.endsWith('Client'))
 
-    for (const iface of clientInterfaces) {
-      if (results.some(r => r.feignClient.id === iface.id)) continue
-      const annotations = this.queries.getAnnotationsByNode(iface.id)
-      if (annotations.some(a => a.annotationName === 'FeignClient') || annotations.length === 0) {
-        const children = this.queries.getChildren(iface.id)
-        results.push({ feignClient: iface, feignMethods: children, annotations })
+      for (const iface of clientInterfaces) {
+        if (limit && results.length >= limit) break
+        if (results.some(r => r.feignClient.id === iface.id)) continue
+        const annotations = this.queries.getAnnotationsByNode(iface.id)
+        if (annotations.some(a => a.annotationName === 'FeignClient') || annotations.length === 0) {
+          const children = this.queries.getChildren(iface.id)
+          results.push({ feignClient: iface, feignMethods: children, annotations })
+        }
       }
     }
 
     return results
   }
 
-  getMyBatisMappings(): {
+  getMyBatisMappings(limit?: number): {
     javaInterface: string
     methodName: string
     xmlPath: string
@@ -151,19 +156,21 @@ export class GraphQueryManager {
 
     const mapperEdges = this.queries.getAllNodes()
     for (const node of mapperEdges) {
+      if (limit && mappings.length >= limit) break
       if (node.kind === 'method') {
         const callees = this.queries.getCallees(node.id)
         for (const callee of callees) {
+          if (limit && mappings.length >= limit) break
           if (callee.id.startsWith('mybatis:')) {
             try {
-              const meta = JSON.parse(callee.signature || '{}')
+              const meta = safeJsonParse(callee.signature || '{}')
               mappings.push({
                 javaInterface: node.parentId ? this.queries.getNode(node.parentId)?.name || '' : '',
                 methodName: node.name,
                 xmlPath: callee.filePath,
                 sqlId: callee.name,
               })
-            } catch {}
+            } catch { /* silent */ }
           }
         }
       }
@@ -172,16 +179,19 @@ export class GraphQueryManager {
     return mappings
   }
 
-  getFileListing(pattern?: string): { path: string; language: string; nodeCount: number; moduleId?: string }[] {
+  getFileListing(pattern?: string, limit?: number): { path: string; language: string; nodeCount: number; moduleId?: string }[] {
     const files = this.queries.getAllFiles()
     let result = files.map(f => ({ path: f.path, language: f.language, nodeCount: f.nodeCount }))
 
     if (pattern) {
-      const globPattern = pattern.replace(/\*/g, '.*').replace(/\?/g, '.')
+      const globPattern = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.')
       const regex = new RegExp(globPattern, 'i')
       result = result.filter(f => regex.test(f.path))
     }
 
+    if (limit !== undefined) {
+      return result.slice(0, limit)
+    }
     return result
   }
 
@@ -206,7 +216,7 @@ export class GraphQueryManager {
     return this.analyzer.findDeadImports()
   }
 
-  findEntryPoints(): any[] {
+  async findEntryPoints(): Promise<any[]> {
     return this.analyzer.findEntryPoints()
   }
 
@@ -240,34 +250,30 @@ export class GraphQueryManager {
     }
   }
 
-  getGatewayRoutes(): { id: string; uri: string; predicates: string[]; filters: string[] }[] {
+  getGatewayRoutes(limit?: number): { id: string; uri: string; predicates: string[]; filters: string[] }[] {
     const routes: { id: string; uri: string; predicates: string[]; filters: string[] }[] = []
-    for (const node of this.queries.getAllNodes()) {
-      if (node.id.startsWith('gateway:')) {
-        const anns = this.queries.getAnnotationsByNode(node.id)
-        const meta: any = {}
-        for (const a of anns) meta[a.annotationName] = a.value
-        routes.push({
-          id: node.name, uri: meta.uri ?? '',
-          predicates: meta.predicates ? JSON.parse(meta.predicates) : [],
-          filters: meta.filters ? JSON.parse(meta.filters) : [],
-        })
-      }
+    for (const node of this.queries.getNodesByIdPrefix('gateway:', limit)) {
+      const anns = this.queries.getAnnotationsByNode(node.id)
+      const meta: any = {}
+      for (const a of anns) meta[a.annotationName] = a.value
+      routes.push({
+        id: node.name, uri: meta.uri ?? '',
+        predicates: meta.predicates ? safeJsonParse(meta.predicates) : [],
+        filters: meta.filters ? safeJsonParse(meta.filters) : [],
+      })
     }
     return routes
   }
 
-  getMessageQueueBindings(): {
+  getMessageQueueBindings(limit?: number): {
     type: string; queueName: string; exchange: string; routingKey: string; moduleId: string
   }[] {
     const bindings: { type: string; queueName: string; exchange: string; routingKey: string; moduleId: string }[] = []
-    for (const node of this.queries.getAllNodes()) {
-      if (node.id.startsWith('mq:')) {
-        try {
-          const meta = JSON.parse(node.signature || '{}')
-          bindings.push({ ...meta, moduleId: node.moduleId ?? '' })
-        } catch {}
-      }
+    for (const node of this.queries.getNodesByIdPrefix('mq:', limit)) {
+      try {
+        const meta = safeJsonParse(node.signature || '{}')
+        bindings.push({ ...meta, moduleId: node.moduleId ?? '' })
+      } catch { /* silent */ }
     }
     return bindings
   }
@@ -277,12 +283,12 @@ export class GraphQueryManager {
     const edges = this.queries.getAllEdges().filter(e => e.kind === 'api_mapping')
     for (const e of edges) {
       try {
-        const meta = JSON.parse(e.metadata ?? '{}')
+        const meta = safeJsonParse(e.metadata ?? '{}')
         mappings.push({
           vueFile: e.sourceId, apiPath: meta.path ?? '',
           controllerMethod: e.targetId, controllerFile: meta.controllerFile ?? '',
         })
-      } catch {}
+      } catch { /* silent */ }
     }
     return mappings
   }
@@ -292,35 +298,122 @@ export class GraphQueryManager {
     const edges = this.queries.getAllEdges().filter(e => e.kind === 'secured_by')
     for (const e of edges) {
       try {
-        const meta = JSON.parse(e.metadata ?? '{}')
+        const meta = safeJsonParse(e.metadata ?? '{}')
         results.push({ filePath: e.sourceId, annotation: meta.annotation ?? '', value: meta.value ?? '' })
-      } catch {}
+      } catch { /* silent */ }
     }
     return results
   }
 
-  getJpaEntities(): { className: string; tableName: string; columns: number; relationships: number }[] {
+  getJpaEntities(limit?: number): { className: string; tableName: string; columns: number; relationships: number }[] {
     const entities: { className: string; tableName: string; columns: number; relationships: number }[] = []
-    for (const node of this.queries.getAllNodes()) {
-      if (node.id.startsWith('jpa:')) {
-        try {
-          const meta = JSON.parse(node.signature || '{}')
-          entities.push({ className: node.name, tableName: meta.table ?? '', columns: meta.columns ?? 0, relationships: meta.relationships ?? 0 })
-        } catch {}
-      }
+    for (const node of this.queries.getNodesByIdPrefix('jpa:', limit)) {
+      try {
+        const meta = safeJsonParse(node.signature || '{}')
+        entities.push({ className: node.name, tableName: meta.table ?? '', columns: meta.columns ?? 0, relationships: meta.relationships ?? 0 })
+      } catch { /* silent */ }
     }
     return entities
   }
 
-  getBatchJobs(): { name: string; steps: string[]; chunkSize?: number }[] {
-    const jobs: { name: string; steps: string[]; chunkSize?: number }[] = []
-    for (const node of this.queries.getAllNodes()) {
-      if (node.id.startsWith('batch:')) {
+  getReactComponents(limit?: number): { componentName: string; filePath: string; hooks: string[]; props: string[]; children: string[] }[] {
+    const comps: { componentName: string; filePath: string; hooks: string[]; props: string[]; children: string[] }[] = []
+    for (const node of this.queries.getNodesByIdPrefix('react:', limit)) {
+      if (node.kind === 'component') {
         try {
-          const meta = JSON.parse(node.signature || '{}')
-          jobs.push({ name: node.name, steps: meta.steps ?? [], chunkSize: meta.chunkSize })
-        } catch {}
+          const meta = safeJsonParse(node.signature || '{}')
+          comps.push({ componentName: node.name, filePath: node.filePath, hooks: meta.hooks ?? [], props: meta.props ?? [], children: meta.children ?? [] })
+        } catch { /* silent */ }
       }
+    }
+    return comps
+  }
+
+  getReactStores(limit?: number): { storeName: string; filePath: string; type: string; detail: string }[] {
+    const stores: { storeName: string; filePath: string; type: string; detail: string }[] = []
+    for (const node of this.queries.getNodesByIdPrefix('react:store:', limit)) {
+      try {
+        const meta = safeJsonParse(node.signature || '{}')
+        const type = meta.slices ? 'redux' : meta.stateFields ? 'zustand' : 'unknown'
+        stores.push({ storeName: node.name, filePath: node.filePath, type, detail: JSON.stringify(meta) })
+      } catch { /* silent */ }
+    }
+    return stores
+  }
+
+  getReactQueries(limit?: number): { hookName: string; filePath: string; endpoint: string; method: string }[] {
+    const queries: { hookName: string; filePath: string; endpoint: string; method: string }[] = []
+    for (const node of this.queries.getNodesByIdPrefix('react:query:', limit)) {
+      try {
+        const meta = safeJsonParse(node.signature || '{}')
+        queries.push({ hookName: node.name, filePath: node.filePath, endpoint: meta.endpoint ?? '', method: meta.method ?? 'GET' })
+      } catch { /* silent */ }
+    }
+    return queries
+  }
+
+  getMongoEntities(limit?: number): { className: string; filePath: string; collection: string; fields: number; repositories: boolean }[] {
+    const entities: { className: string; filePath: string; collection: string; fields: number; repositories: boolean }[] = []
+    for (const node of this.queries.getNodesByIdPrefix('mongo:', limit)) {
+      try {
+        const meta = safeJsonParse(node.signature || '{}')
+        entities.push({ className: node.name, filePath: node.filePath, collection: meta.collection ?? '', fields: meta.fields ?? 0, repositories: meta.repository ?? false })
+      } catch { /* silent */ }
+    }
+    return entities
+  }
+
+  getRedisHashes(limit?: number): { className: string; filePath: string; redisKey: string; fields: number; ttl?: string }[] {
+    const hashes: { className: string; filePath: string; redisKey: string; fields: number; ttl?: string }[] = []
+    for (const node of this.queries.getNodesByIdPrefix('redis:hash:', limit)) {
+      try {
+        const meta = safeJsonParse(node.signature || '{}')
+        hashes.push({ className: node.name, filePath: node.filePath, redisKey: meta.redisKey ?? '', fields: (meta.fields ?? []).length, ttl: meta.ttl })
+      } catch { /* silent */ }
+    }
+    return hashes
+  }
+
+  getRedisTemplates(limit?: number): { className: string; filePath: string; operations: string[]; keyPatterns: string[] }[] {
+    const tpls: { className: string; filePath: string; operations: string[]; keyPatterns: string[] }[] = []
+    for (const node of this.queries.getNodesByIdPrefix('redis:template:', limit)) {
+      try {
+        const meta = safeJsonParse(node.signature || '{}')
+        tpls.push({ className: node.name, filePath: node.filePath, operations: meta.operations ?? [], keyPatterns: meta.keyPatterns ?? [] })
+      } catch { /* silent */ }
+    }
+    return tpls
+  }
+
+  getSqlTables(limit?: number): { tableName: string; filePath: string; columns: number; engine?: string }[] {
+    const tables: { tableName: string; filePath: string; columns: number; engine?: string }[] = []
+    for (const node of this.queries.getNodesByIdPrefix('mysql:table:', limit)) {
+      try {
+        const meta = safeJsonParse(node.signature || '{}')
+        tables.push({ tableName: node.name, filePath: node.filePath, columns: meta.columns ?? 0, engine: meta.engine })
+      } catch { /* silent */ }
+    }
+    return tables
+  }
+
+  getSqlStatements(limit?: number): { methodName: string; filePath: string; className: string; sql: string; dbType: string }[] {
+    const sqls: { methodName: string; filePath: string; className: string; sql: string; dbType: string }[] = []
+    for (const node of this.queries.getNodesByIdPrefix('mysql:sql:', limit)) {
+      try {
+        const meta = safeJsonParse(node.signature || '{}')
+        sqls.push({ methodName: node.name, filePath: node.filePath, className: meta.className ?? '', sql: (meta.sql ?? '').slice(0, 200), dbType: meta.dbType ?? '' })
+      } catch { /* silent */ }
+    }
+    return sqls
+  }
+
+  getBatchJobs(limit?: number): { name: string; steps: string[]; chunkSize?: number }[] {
+    const jobs: { name: string; steps: string[]; chunkSize?: number }[] = []
+    for (const node of this.queries.getNodesByIdPrefix('batch:', limit)) {
+      try {
+        const meta = safeJsonParse(node.signature || '{}')
+        jobs.push({ name: node.name, steps: meta.steps ?? [], chunkSize: meta.chunkSize })
+      } catch { /* silent */ }
     }
     return jobs
   }
@@ -330,22 +423,20 @@ export class GraphQueryManager {
     const edges = this.queries.getAllEdges().filter(e => e.kind === 'resilience_policy')
     for (const e of edges) {
       try {
-        const meta = JSON.parse(e.metadata ?? '{}')
+        const meta = safeJsonParse(e.metadata ?? '{}')
         policies.push({ annotation: meta.annotation ?? '', value: meta.value ?? '', fallbackMethod: meta.fallbackMethod ?? '', nodeId: e.sourceId })
-      } catch {}
+      } catch { /* silent */ }
     }
     return policies
   }
 
-  getPiniaStores(): { name: string; stateKeys: string[]; actions: string[]; getters: string[]; usedIn: string[] }[] {
+  getPiniaStores(limit?: number): { name: string; stateKeys: string[]; actions: string[]; getters: string[]; usedIn: string[] }[] {
     const stores: { name: string; stateKeys: string[]; actions: string[]; getters: string[]; usedIn: string[] }[] = []
-    for (const node of this.queries.getAllNodes()) {
-      if (node.id.startsWith('pinia:')) {
-        try {
-          const meta = JSON.parse(node.signature || '{}')
-          stores.push({ name: node.name, stateKeys: meta.stateKeys ?? [], actions: meta.actions ?? [], getters: meta.getters ?? [], usedIn: meta.usedIn ?? [] })
-        } catch {}
-      }
+    for (const node of this.queries.getNodesByIdPrefix('pinia:', limit)) {
+      try {
+        const meta = safeJsonParse(node.signature || '{}')
+        stores.push({ name: node.name, stateKeys: meta.stateKeys ?? [], actions: meta.actions ?? [], getters: meta.getters ?? [], usedIn: meta.usedIn ?? [] })
+      } catch { /* silent */ }
     }
     return stores
   }
@@ -371,42 +462,36 @@ export class GraphQueryManager {
     return msgs
   }
 
-  getDeployContainers(): { name: string; image: string; ports: string[]; dependsOn: string[] }[] {
+  getDeployContainers(limit?: number): { name: string; image: string; ports: string[]; dependsOn: string[] }[] {
     const containers: { name: string; image: string; ports: string[]; dependsOn: string[] }[] = []
-    for (const node of this.queries.getAllNodes()) {
-      if (node.id.startsWith('docker:')) {
-        try {
-          const meta = JSON.parse(node.signature || '{}')
-          containers.push({ name: node.name, image: meta.image ?? '', ports: meta.ports ?? [], dependsOn: meta.dependsOn ?? [] })
-        } catch {}
-      }
+    for (const node of this.queries.getNodesByIdPrefix('docker:', limit)) {
+      try {
+        const meta = safeJsonParse(node.signature || '{}')
+        containers.push({ name: node.name, image: meta.image ?? '', ports: meta.ports ?? [], dependsOn: meta.dependsOn ?? [] })
+      } catch { /* silent */ }
     }
     return containers
   }
 
-  getK8sResources(): { kind: string; name: string; image: string; replicas: number; ports: string[] }[] {
+  getK8sResources(limit?: number): { kind: string; name: string; image: string; replicas: number; ports: string[] }[] {
     const resources: { kind: string; name: string; image: string; replicas: number; ports: string[] }[] = []
-    for (const node of this.queries.getAllNodes()) {
-      if (node.id.startsWith('k8s:')) {
-        try {
-          const meta = JSON.parse(node.signature || '{}')
-          resources.push({ kind: node.name.split(':')[0] ?? '', name: node.name, image: meta.image ?? '', replicas: meta.replicas ?? 1, ports: meta.ports ?? [] })
-        } catch {}
-      }
+    for (const node of this.queries.getNodesByIdPrefix('k8s:', limit)) {
+      try {
+        const meta = safeJsonParse(node.signature || '{}')
+        resources.push({ kind: node.name.split(':')[0] ?? '', name: node.name, image: meta.image ?? '', replicas: meta.replicas ?? 1, ports: meta.ports ?? [] })
+      } catch { /* silent */ }
     }
     return resources
   }
 
-  getOpenApiEndpoints(): { path: string; method: string; operationId: string; serviceName?: string }[] {
+  getOpenApiEndpoints(limit?: number): { path: string; method: string; operationId: string; serviceName?: string }[] {
     const endpoints: { path: string; method: string; operationId: string; serviceName?: string }[] = []
-    for (const node of this.queries.getAllNodes()) {
-      if (node.id.startsWith('openapi:')) {
-        const parts = node.id.replace('openapi:', '').split(':')
-        endpoints.push({
-          method: parts[0] ?? '', path: parts.slice(1).join(':'),
-          operationId: node.name, serviceName: node.moduleId,
-        })
-      }
+    for (const node of this.queries.getNodesByIdPrefix('openapi:', limit)) {
+      const parts = node.id.replace('openapi:', '').split(':')
+      endpoints.push({
+        method: parts[0] ?? '', path: parts.slice(1).join(':'),
+        operationId: node.name, serviceName: node.moduleId,
+      })
     }
     return endpoints
   }
@@ -445,7 +530,7 @@ export class GraphQueryManager {
     for (const ae of apiEdges) {
       const hops: import('../types.js').FullTraceHop[] = []
       let meta: any = {}
-      try { meta = JSON.parse(ae.metadata ?? '{}') } catch {}
+      try { meta = safeJsonParse(ae.metadata ?? '{}') } catch { /* silent */ }
       hops.push({ kind: 'vue_api_call', id: ae.sourceId, name: ae.sourceId.split('/').pop() ?? '', detail: `API → ${meta.path ?? ''}` })
       const cn = this.queries.getNode(ae.targetId)
       if (cn) {
@@ -479,7 +564,7 @@ export class GraphQueryManager {
       if (!seen.has(e.sourceId)) {
         seen.add(e.sourceId)
         try {
-          const meta = JSON.parse(e.metadata ?? '{}')
+          const meta = safeJsonParse(e.metadata ?? '{}')
           bindings.push({
             configClass: e.sourceId,
             prefix: meta.prefix ?? '',
@@ -487,7 +572,7 @@ export class GraphQueryManager {
             properties: [{ key: meta.key ?? '', value: meta.value ?? '', sourceFile: '', sourceLine: 0 }],
             moduleId: '',
           })
-        } catch {}
+        } catch { /* silent */ }
       }
     }
     return bindings
@@ -498,7 +583,7 @@ export class GraphQueryManager {
     const edges = this.queries.getAllEdges().filter(e => e.kind === 'transactional')
     for (const e of edges) {
       try {
-        const meta = JSON.parse(e.metadata ?? '{}')
+        const meta = safeJsonParse(e.metadata ?? '{}')
         list.push({
           nodeId: e.sourceId,
           methodName: meta.methodName ?? '',
@@ -512,7 +597,7 @@ export class GraphQueryManager {
           filePath: meta.filePath ?? '',
           line: meta.line ?? 0,
         })
-      } catch {}
+      } catch { /* silent */ }
     }
     return list
   }
@@ -522,13 +607,13 @@ export class GraphQueryManager {
     const txEdges = this.queries.getAllEdges().filter(e => e.kind === 'tx_propagate')
     for (const e of txEdges) {
       try {
-        const meta = JSON.parse(e.metadata ?? '{}')
+        const meta = safeJsonParse(e.metadata ?? '{}')
         const on = this.queries.getNode(e.sourceId)
         const inn = this.queries.getNode(e.targetId)
         if (on && inn && meta.innerPropagation === 'REQUIRES_NEW') {
           conflicts.push({ outerMethod: on.name, innerMethod: inn.name, outerPropagation: meta.callerPropagation ?? 'REQUIRED', innerPropagation: 'REQUIRES_NEW', warning: 'REQUIRES_NEW inside existing transaction: outer tx will be suspended' })
         }
-      } catch {}
+      } catch { /* silent */ }
     }
     return conflicts
   }
@@ -539,12 +624,12 @@ export class GraphQueryManager {
     const cacheMap = new Map<string, any[]>()
     for (const e of edges) {
       try {
-        const meta = JSON.parse(e.metadata ?? '{}')
+        const meta = safeJsonParse(e.metadata ?? '{}')
         for (const name of meta.cacheNames ?? []) {
           if (!cacheMap.has(name)) cacheMap.set(name, [])
           cacheMap.get(name)!.push(meta)
         }
-      } catch {}
+      } catch { /* silent */ }
     }
     for (const [cacheName, entries] of cacheMap) {
       const services = new Set<string>()
@@ -577,31 +662,32 @@ export class GraphQueryManager {
     return manifest.slice(0, limit)
   }
 
-  getLombokSynthetics(): { nodeId: string; annotation: string; field?: string }[] {
+  getLombokSynthetics(limit?: number): { nodeId: string; annotation: string; field?: string }[] {
     const results: { nodeId: string; annotation: string; field?: string }[] = []
     const edges = this.queries.getAllEdges().filter(e => e.kind === 'lombok_synthetic')
     for (const e of edges) {
+      if (limit !== undefined && results.length >= limit) break
       try {
-        const meta = JSON.parse(e.metadata ?? '{}')
+        const meta = safeJsonParse(e.metadata ?? '{}')
         results.push({ nodeId: e.sourceId, annotation: meta.annotation ?? '', field: meta.field })
-      } catch {}
+      } catch { /* silent */ }
     }
     return results
   }
 
-  getGrpcServices(): { name: string; package: string; rpcMethods: string[]; filePath: string; stubClass?: string }[] {
+  getGrpcServices(limit?: number): { name: string; package: string; rpcMethods: string[]; filePath: string; stubClass?: string }[] {
     const services: { name: string; package: string; rpcMethods: string[]; filePath: string; stubClass?: string }[] = []
     const grpcEdges = this.queries.getAllEdges().filter(e => e.kind === 'grpc_stub')
     const stubMap = new Map<string, string>()
     for (const e of grpcEdges) {
       try {
-        const meta = JSON.parse(e.metadata ?? '{}')
+        const meta = safeJsonParse(e.metadata ?? '{}')
         stubMap.set(e.sourceId, meta.stubClass ?? '')
-      } catch {}
+      } catch { /* silent */ }
     }
 
-    for (const node of this.queries.getAllNodes()) {
-      if (node.id.startsWith('grpc:') && node.kind === 'interface') {
+    for (const node of this.queries.getNodesByIdPrefix('grpc:', limit)) {
+      if (node.kind === 'interface') {
         const children = this.queries.getChildren(node.id)
         const parts = node.qualifiedName.split('.')
         services.push({
@@ -616,10 +702,11 @@ export class GraphQueryManager {
     return services
   }
 
-  getMapStructMappers(): MapStructMapperSummary[] {
+  getMapStructMappers(limit?: number): MapStructMapperSummary[] {
     const mappers: MapStructMapperSummary[] = []
     const annotations = new Map<string, string[]>()
     for (const node of this.queries.getAllNodes()) {
+      if (limit !== undefined && mappers.length >= limit) break
       if (node.kind === 'interface') {
         const anns = this.queries.getAnnotationsByNode(node.id)
         if (anns.some(a => a.annotationName === 'Mapper')) {
@@ -629,8 +716,8 @@ export class GraphQueryManager {
           mappers.push({
             interfaceName: node.name,
             methods: methods.map(m => {
-              const se = sourceEdges.find(e => e.targetId === node.id && JSON.parse(e.metadata || '{}').method === m.name)
-              const te = targetEdges.find(e => e.sourceId === node.id && JSON.parse(e.metadata || '{}').method === m.name)
+              const se = sourceEdges.find(e => e.targetId === node.id && safeJsonParse(e.metadata || '{}').method === m.name)
+              const te = targetEdges.find(e => e.sourceId === node.id && safeJsonParse(e.metadata || '{}').method === m.name)
               const fieldMappings: { source: string; target: string }[] = []
               const mappingAnns = this.queries.getAnnotationsByNode(m.id)
                 .filter(a => a.annotationName === 'Mapping')
@@ -640,8 +727,8 @@ export class GraphQueryManager {
               }
               return {
                 methodName: m.name,
-                sourceType: se ? JSON.parse(se.metadata || '{}').sourceType ?? '' : '',
-                targetType: te ? JSON.parse(te.metadata || '{}').targetType ?? '' : '',
+                sourceType: se ? safeJsonParse(se.metadata || '{}').sourceType ?? '' : '',
+                targetType: te ? safeJsonParse(te.metadata || '{}').targetType ?? '' : '',
                 fieldMappings,
               }
             }),
@@ -661,13 +748,13 @@ export class GraphQueryManager {
 
       const conditions: ConditionInfo[] = []
       try {
-        const parsed = JSON.parse(conditionalAnn.value)
+        const parsed = safeJsonParse(conditionalAnn.value)
         if (Array.isArray(parsed)) {
           for (const c of parsed) {
             conditions.push({ type: c.type, value: c.value, matchIfMissing: c.matchIfMissing ?? false })
           }
         }
-      } catch {}
+      } catch { /* silent */ }
 
       const afterEdges = this.queries.getAllEdges().filter(e => e.sourceId === node.id && e.kind === 'auto_configure_after')
       const beforeEdges = this.queries.getAllEdges().filter(e => e.sourceId === node.id && e.kind === 'auto_configure_before')
@@ -683,17 +770,17 @@ export class GraphQueryManager {
     return configs
   }
 
-  getMavenModules(): MavenModuleSummary[] {
+  getMavenModules(limit?: number): MavenModuleSummary[] {
     const modules: MavenModuleSummary[] = []
-    for (const node of this.queries.getAllNodes()) {
-      if (node.kind === 'module' && node.id.startsWith('pom:')) {
+    for (const node of this.queries.getNodesByIdPrefix('pom:', limit)) {
+      if (node.kind === 'module') {
         const depEdges = this.queries.getAllEdges().filter(e => e.sourceId === node.id && e.kind === 'maven_depends_on')
         const submoduleEdges = this.queries.getAllEdges().filter(e => e.sourceId === node.id && e.kind === 'maven_submodule')
         modules.push({
           artifactId: node.name,
           qualifiedName: node.qualifiedName,
           dependencies: depEdges.map(e => {
-            const meta = JSON.parse(e.metadata || '{}')
+            const meta = safeJsonParse(e.metadata || '{}')
             return {
               groupId: meta.groupId || '',
               artifactId: meta.artifactId || '',
@@ -709,13 +796,13 @@ export class GraphQueryManager {
     return modules
   }
 
-  getMavenScopeConflicts(): MavenScopeConflict[] {
+  getMavenScopeConflicts(limit?: number): MavenScopeConflict[] {
     const depToScopes = new Map<string, { scopes: Set<string>; modules: Set<string> }>()
-    for (const node of this.queries.getAllNodes()) {
-      if (node.kind === 'module' && node.id.startsWith('pom:')) {
+    for (const node of this.queries.getNodesByIdPrefix('pom:', limit)) {
+      if (node.kind === 'module') {
         const deps = this.queries.getAllEdges().filter(e => e.sourceId === node.id && e.kind === 'maven_depends_on')
         for (const d of deps) {
-          const meta = JSON.parse(d.metadata || '{}')
+          const meta = safeJsonParse(d.metadata || '{}')
           const key = `${meta.groupId}:${meta.artifactId}`
           if (!depToScopes.has(key)) depToScopes.set(key, { scopes: new Set(), modules: new Set() })
           const entry = depToScopes.get(key)!
@@ -729,20 +816,20 @@ export class GraphQueryManager {
       .map(([k, v]) => ({ artifactKey: k, scopes: [...v.scopes], modules: [...v.modules] }))
   }
 
-  getGradleModules(): GradleModuleSummary[] {
+  getGradleModules(limit?: number): GradleModuleSummary[] {
     const modules: GradleModuleSummary[] = []
-    for (const node of this.queries.getAllNodes()) {
-      if (node.kind === 'module' && node.id.startsWith('gradle:')) {
+    for (const node of this.queries.getNodesByIdPrefix('gradle:', limit)) {
+      if (node.kind === 'module') {
         const depEdges = this.queries.getAllEdges().filter(e => e.sourceId === node.id && e.kind === 'gradle_depends_on')
         const subEdges = this.queries.getAllEdges().filter(e => e.sourceId === node.id && e.kind === 'gradle_submodule')
         modules.push({
           name: node.name,
           dependencies: depEdges.map(e => {
-            const meta = JSON.parse(e.metadata || '{}')
+            const meta = safeJsonParse(e.metadata || '{}')
             return { group: meta.group || '', artifact: meta.artifact || '', version: meta.version || '', configuration: meta.configuration || 'implementation', isProject: meta.isProject || false }
           }),
           submodules: subEdges.map(e => {
-            const meta = JSON.parse(e.metadata || '{}')
+            const meta = safeJsonParse(e.metadata || '{}')
             return { name: e.targetId.split(':').pop() || '', path: meta.path || '' }
           }),
         })
@@ -758,9 +845,9 @@ export class GraphQueryManager {
       const ccAnn = anns.find(a => a.annotationName === 'CloudConfigRef')
       if (!ccAnn) continue
       try {
-        const parsed = JSON.parse(ccAnn.value)
+        const parsed = safeJsonParse(ccAnn.value)
         configs.push({ className: node.name, filePath: node.filePath, refreshScope: parsed.refreshScope, configKey: parsed.configKey })
-      } catch {}
+      } catch { /* silent */ }
     }
     return configs
   }
@@ -772,9 +859,9 @@ export class GraphQueryManager {
       const lbAnn = anns.find(a => a.annotationName === 'LoadBalancedClient')
       if (!lbAnn) continue
       try {
-        const parsed = JSON.parse(lbAnn.value)
+        const parsed = safeJsonParse(lbAnn.value)
         clients.push({ className: node.parentId ? (this.queries.getNode(node.parentId)?.name || '') : '', fieldName: parsed.fieldName, serviceName: parsed.serviceName })
-      } catch {}
+      } catch { /* silent */ }
     }
     return clients
   }
@@ -785,9 +872,9 @@ export class GraphQueryManager {
     for (const e of allEdges) {
       if (e.kind === 'gateway_route') {
         try {
-          const meta = JSON.parse(e.metadata || '{}')
+          const meta = safeJsonParse(e.metadata || '{}')
           if (meta.uri?.startsWith('lb://')) results.push({ uri: meta.uri, targetService: meta.uri.replace('lb://', '') })
-        } catch {}
+        } catch { /* silent */ }
       }
     }
     const feignNodes = this.queries.getNodesByAnnotation('FeignClient')
@@ -810,7 +897,7 @@ export class GraphQueryManager {
     const allEdges = this.queries.getAllEdges().filter(e => e.kind === 'graphql_handler')
     for (const e of allEdges) {
       try {
-        const meta = JSON.parse(e.metadata || '{}')
+        const meta = safeJsonParse(e.metadata || '{}')
         const target = this.queries.getNode(e.targetId)
         endpoints.push({
           className: this.queries.getNode(e.sourceId)?.name || '',
@@ -819,7 +906,7 @@ export class GraphQueryManager {
           returnType: meta.returnType || '',
           kind: meta.kind || 'query',
         })
-      } catch {}
+      } catch { /* silent */ }
     }
     return endpoints
   }
@@ -829,7 +916,7 @@ export class GraphQueryManager {
     const allEdges = this.queries.getAllEdges().filter(e => e.kind === 'websocket_handler')
     for (const e of allEdges) {
       try {
-        const meta = JSON.parse(e.metadata || '{}')
+        const meta = safeJsonParse(e.metadata || '{}')
         const target = this.queries.getNode(e.targetId)
         endpoints.push({
           className: this.queries.getNode(e.sourceId)?.name || '',
@@ -837,7 +924,7 @@ export class GraphQueryManager {
           destination: meta.destination || '',
           kind: meta.kind || 'message_mapping',
         })
-      } catch {}
+      } catch { /* silent */ }
     }
     return endpoints
   }
@@ -870,7 +957,7 @@ export class GraphQueryManager {
     const allEdges = this.queries.getAllEdges().filter(e => e.kind === 'async_method' || e.kind === 'scheduled_method')
     for (const e of allEdges) {
       try {
-        const meta = JSON.parse(e.metadata || '{}')
+        const meta = safeJsonParse(e.metadata || '{}')
         const target = this.queries.getNode(e.targetId)
         methods.push({
           className: this.queries.getNode(e.sourceId)?.name || '',
@@ -881,7 +968,7 @@ export class GraphQueryManager {
           fixedDelay: meta.fixedDelay,
           executor: meta.executor,
         })
-      } catch {}
+      } catch { /* silent */ }
     }
     return methods
   }
@@ -896,7 +983,7 @@ export class GraphQueryManager {
         aspectClass: source.name,
         filePath: source.filePath,
         adviceType: e.kind.replace('aspect_', ''),
-        pointcut: (JSON.parse(e.metadata || '{}')).pointcut || '',
+        pointcut: (safeJsonParse(e.metadata || '{}')).pointcut || '',
       })
     }
     return advices
@@ -908,7 +995,7 @@ export class GraphQueryManager {
       if (!e.kind.startsWith('security_filter_')) continue
       const source = this.queries.getNode(e.sourceId)
       try {
-        const meta = JSON.parse(e.metadata || '{}')
+        const meta = safeJsonParse(e.metadata || '{}')
         rules.push({
           classFile: source?.filePath || '',
           urlPatterns: meta.urlPatterns || [],
@@ -916,7 +1003,7 @@ export class GraphQueryManager {
           roles: meta.roles || [],
           expression: meta.expression || '',
         })
-      } catch {}
+      } catch { /* silent */ }
     }
     return rules
   }
@@ -929,7 +1016,7 @@ export class GraphQueryManager {
       })
       .map(n => {
         const ann = this.queries.getAnnotationsByNode(n.id).find(a => a.annotationName === 'K8sService')
-        const parsed = ann ? JSON.parse(ann.value) : {}
+        const parsed = ann ? safeJsonParse(ann.value) : {}
         return { serviceName: n.name.replace('k8s:Service:', ''), type: parsed.type || 'ClusterIP', ports: parsed.ports || [] }
       })
   }
@@ -944,8 +1031,8 @@ export class GraphQueryManager {
       ingresses.push({
         name: n.name,
         host: n.qualifiedName.replace('ingress:', ''),
-        paths: pathAnns.map(a => JSON.parse(a.value)),
-        tlsHosts: tlsAnns.map(a => JSON.parse(a.value).host),
+        paths: pathAnns.map(a => safeJsonParse(a.value)),
+        tlsHosts: tlsAnns.map(a => safeJsonParse(a.value).host),
       })
     }
     return ingresses
@@ -958,13 +1045,13 @@ export class GraphQueryManager {
       const npAnn = anns.find(a => a.annotationName === 'K8sNetworkPolicy')
       if (!npAnn) continue
       try {
-        const parsed = JSON.parse(npAnn.value)
+        const parsed = safeJsonParse(npAnn.value)
         policies.push({
           name: n.name.replace('k8s:NetworkPolicy:', ''),
           policyTypes: parsed.policyTypes || [],
           ingressRuleCount: parsed.ingressRules || 0,
         })
-      } catch {}
+      } catch { /* silent */ }
     }
     return policies
   }
@@ -976,14 +1063,14 @@ export class GraphQueryManager {
       const caAnn = anns.find(a => a.annotationName === 'ControllerAdvice')
       if (!caAnn) continue
       try {
-        const parsed = JSON.parse(caAnn.value)
+        const parsed = safeJsonParse(caAnn.value)
         advices.push({
           className: n.name,
           basePackages: parsed.basePackages || [],
           assignableTypes: parsed.assignableTypes || [],
           annotations: parsed.annotations || [],
         })
-      } catch {}
+      } catch { /* silent */ }
     }
     return advices
   }
@@ -995,14 +1082,14 @@ export class GraphQueryManager {
       const iAnn = anns.find(a => a.annotationName === 'Interceptor')
       if (!iAnn) continue
       try {
-        const parsed = JSON.parse(iAnn.value)
+        const parsed = safeJsonParse(iAnn.value)
         interceptors.push({
           classFile: n.filePath,
           className: n.name,
           type: parsed.type || 'HandlerInterceptor',
           urlPatterns: parsed.urlPatterns || ['/*'],
         })
-      } catch {}
+      } catch { /* silent */ }
     }
     return interceptors
   }
@@ -1013,7 +1100,7 @@ export class GraphQueryManager {
       if (e.kind !== 'stream_function') continue
       const target = this.queries.getNode(e.targetId)
       try {
-        const meta = JSON.parse(e.metadata || '{}')
+        const meta = safeJsonParse(e.metadata || '{}')
         funcs.push({
           className: this.queries.getNode(e.sourceId)?.name || '',
           beanMethod: target?.name || '',
@@ -1022,7 +1109,7 @@ export class GraphQueryManager {
           outputType: meta.output || '',
           bindingName: meta.binding || '',
         })
-      } catch {}
+      } catch { /* silent */ }
     }
     return funcs
   }
@@ -1033,7 +1120,7 @@ export class GraphQueryManager {
       if (e.kind !== 'jpa_query') continue
       const target = this.queries.getNode(e.targetId)
       try {
-        const meta = JSON.parse(e.metadata || '{}')
+        const meta = safeJsonParse(e.metadata || '{}')
         queries.push({
           repositoryClass: this.queries.getNode(e.sourceId)?.name || '',
           methodName: target?.name || '',
@@ -1041,7 +1128,7 @@ export class GraphQueryManager {
           nativeQuery: meta.native || false,
           modification: meta.modification || false,
         })
-      } catch {}
+      } catch { /* silent */ }
     }
     return queries
   }
@@ -1053,13 +1140,13 @@ export class GraphQueryManager {
       const pAnn = anns.find(a => a.annotationName === 'JpaProcedure')
       if (!pAnn) continue
       try {
-        const parsed = JSON.parse(pAnn.value)
+        const parsed = safeJsonParse(pAnn.value)
         procs.push({
           repositoryClass: n.filePath.split('/').pop()?.replace('.java', '') || '',
           procedureName: parsed.procedureName || '',
           outputType: parsed.outputType || '',
         })
-      } catch {}
+      } catch { /* silent */ }
     }
     return procs
   }
@@ -1074,9 +1161,9 @@ export class GraphQueryManager {
         profiles.push({
           className: n.name,
           filePath: n.filePath,
-          profiles: JSON.parse(pAnn.value),
+          profiles: safeJsonParse(pAnn.value),
         })
-      } catch {}
+      } catch { /* silent */ }
     }
     return profiles
   }

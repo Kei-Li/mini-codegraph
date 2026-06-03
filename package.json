@@ -25,7 +25,9 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/cli.js",
-    "test": "tsc && node --test 'tests/**/*.test.mjs'",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "test:quick": "tsc && node --test --test-concurrency=1 'tests/**/*.test.mjs'",
     "prepublishOnly": "tsc"
   },
@@ -38,6 +40,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.14.1",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.8"
   }
 }

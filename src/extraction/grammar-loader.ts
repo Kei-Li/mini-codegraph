@@ -8,7 +8,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 
 const GRAMMAR_CDN = 'https://cdn.jsdelivr.net/npm/@tree-sitter-grammars'
 
-const MAX_PARSED_FILES_BEFORE_RECYCLE = 250
+const MAX_PARSED_FILES_BEFORE_RECYCLE = 4000
 
 export class GrammarLoader {
   private initialized = false
@@ -79,12 +79,12 @@ export class GrammarLoader {
       try {
         const entry = this.parsers.get(language)!
         const parser = entry.parser
-        try { (parser as any).delete?.() } catch {}
+        try { (parser as any).delete?.() } catch { /* silent */ }
         this.parsers.delete(language)
         if (typeof globalThis.gc === 'function') {
-          try { globalThis.gc() } catch {}
+          try { globalThis.gc() } catch { /* silent */ }
         }
-      } catch {}
+      } catch { /* silent */ }
     }
   }
 

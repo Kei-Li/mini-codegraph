@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import type { QueryManager } from '../db/queries.js'
@@ -19,7 +19,7 @@ export class GitSyncManager {
 
   getCurrentCommitHash(): string {
     try {
-      return execSync('git rev-parse HEAD', { cwd: this.projectRoot, encoding: 'utf-8' }).trim()
+      return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: this.projectRoot, encoding: 'utf-8' }).trim()
     } catch {
       return ''
     }
@@ -27,9 +27,9 @@ export class GitSyncManager {
 
   getChangedFilesSince(hash: string): string[] {
     try {
-      const changed = execSync(`git diff --name-only ${hash}..HEAD`, { cwd: this.projectRoot, encoding: 'utf-8' })
+      const changed = execFileSync('git', ['diff', '--name-only', `${hash}..HEAD`], { cwd: this.projectRoot, encoding: 'utf-8' })
         .trim().split('\n').filter(Boolean)
-      const untracked = execSync('git ls-files --others --exclude-standard', { cwd: this.projectRoot, encoding: 'utf-8' })
+      const untracked = execFileSync('git', ['ls-files', '--others', '--exclude-standard'], { cwd: this.projectRoot, encoding: 'utf-8' })
         .trim().split('\n').filter(Boolean)
       return [...changed, ...untracked].filter(f => isSupportedFile(f))
     } catch {
@@ -39,7 +39,7 @@ export class GitSyncManager {
 
   getAllTrackedFiles(): string[] {
     try {
-      return execSync('git ls-files', { cwd: this.projectRoot, encoding: 'utf-8' })
+      return execFileSync('git', ['ls-files'], { cwd: this.projectRoot, encoding: 'utf-8' })
         .trim().split('\n').filter(Boolean).filter(f => isSupportedFile(f))
     } catch {
       return []
@@ -48,7 +48,7 @@ export class GitSyncManager {
 
   getFileDiff(oldHash: string, filePath: string): { added: number; removed: number; lines: string[] } {
     try {
-      const diff = execSync(`git diff ${oldHash}..HEAD -- "${filePath}"`, { cwd: this.projectRoot, encoding: 'utf-8' })
+      const diff = execFileSync('git', ['diff', `${oldHash}..HEAD`, '--', filePath], { cwd: this.projectRoot, encoding: 'utf-8' })
       const lines = diff.split('\n').filter(l => l.startsWith('+') || l.startsWith('-'))
       const added = lines.filter(l => l.startsWith('+') && !l.startsWith('+++')).length
       const removed = lines.filter(l => l.startsWith('-') && !l.startsWith('---')).length
@@ -60,7 +60,7 @@ export class GitSyncManager {
 
   detectNewFilesSince(hash: string): string[] {
     try {
-      const newFiles = execSync(`git diff --diff-filter=A --name-only ${hash}..HEAD`, { cwd: this.projectRoot, encoding: 'utf-8' })
+      const newFiles = execFileSync('git', ['diff', '--diff-filter=A', '--name-only', `${hash}..HEAD`], { cwd: this.projectRoot, encoding: 'utf-8' })
         .trim().split('\n').filter(Boolean)
       return newFiles.filter(f => isSupportedFile(f))
     } catch {
@@ -70,7 +70,7 @@ export class GitSyncManager {
 
   detectDeletedFilesSince(hash: string): string[] {
     try {
-      const deleted = execSync(`git diff --diff-filter=D --name-only ${hash}..HEAD`, { cwd: this.projectRoot, encoding: 'utf-8' })
+      const deleted = execFileSync('git', ['diff', '--diff-filter=D', '--name-only', `${hash}..HEAD`], { cwd: this.projectRoot, encoding: 'utf-8' })
         .trim().split('\n').filter(Boolean)
       return deleted
     } catch {

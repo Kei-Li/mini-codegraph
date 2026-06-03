@@ -1,5 +1,5 @@
-import { join } from 'node:path'
-import { existsSync, readFileSync, mkdirSync, statSync } from 'node:fs'
+import { join, relative } from 'node:path'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs'
 import { DatabaseConnection } from './db/connection.js'
 import { QueryManager } from './db/queries.js'
 import { ExtractionOrchestrator } from './extraction/orchestrator.js'
@@ -13,6 +13,12 @@ import { detectSpring } from './resolution/frameworks/java.js'
 import { detectVue } from './resolution/frameworks/vue.js'
 import { findMulitModuleProjects } from './resolution/frameworks/java.js'
 
+export interface ProjectConfig {
+  exclude: string[]
+}
+
+const DEFAULT_CONFIG: ProjectConfig = { exclude: [] }
+
 export class MiniCodeGraph {
   private db: DatabaseConnection
   private queries: QueryManager
@@ -21,6 +27,7 @@ export class MiniCodeGraph {
   private watcher: FileWatcher | null = null
   private projectRoot: string
   private dataDir: string
+  private config: ProjectConfig
   private daemonMode = false
   private multiModule = false
   private moduleIds: string[] = []
@@ -35,11 +42,53 @@ export class MiniCodeGraph {
     this.queries = new QueryManager(this.db)
     this.orchestrator = new ExtractionOrchestrator(this.db, this.queries)
     this.graphManager = new GraphQueryManager(this.queries, projectRoot)
+    this.config = this.loadConfig()
   }
 
   static init(projectRoot: string, indexNow = false): MiniCodeGraph {
     const cg = new MiniCodeGraph(projectRoot)
+    cg.ensureConfig()
     return cg
+  }
+
+  private configPath(): string {
+    return join(this.dataDir, 'config.json')
+  }
+
+  private ensureConfig(): void {
+    if (!existsSync(this.configPath())) {
+      this.config = { ...DEFAULT_CONFIG }
+      this.saveConfig()
+    }
+  }
+
+  private loadConfig(): ProjectConfig {
+    try {
+      const cp = this.configPath()
+      if (!existsSync(cp)) return { ...DEFAULT_CONFIG }
+      return JSON.parse(readFileSync(cp, 'utf-8'))
+    } catch { return { ...DEFAULT_CONFIG } }
+  }
+
+  private saveConfig(): void {
+    if (!existsSync(this.dataDir)) mkdirSync(this.dataDir, { recursive: true })
+    writeFileSync(this.configPath(), JSON.stringify(this.config, null, 2))
+  }
+
+  addExclude(pattern: string): void {
+    if (!this.config.exclude.includes(pattern)) {
+      this.config.exclude.push(pattern)
+      this.saveConfig()
+    }
+  }
+
+  removeExclude(pattern: string): void {
+    this.config.exclude = this.config.exclude.filter(p => p !== pattern)
+    this.saveConfig()
+  }
+
+  listExcludes(): string[] {
+    return [...this.config.exclude]
   }
 
   static initMultiModule(parentDir: string): { cg: MiniCodeGraph; modules: ModuleInfo[] } {
@@ -60,7 +109,7 @@ export class MiniCodeGraph {
           const deps = { ...pkg.dependencies, ...pkg.devDependencies } as Record<string, string>
           if (deps.vue || deps.nuxt) language = 'vue'
           else language = 'typescript'
-        } catch {}
+        } catch { /* silent */ }
       }
 
       return { id: name, name, rootPath: dir, buildSystem, language, indexedAt: 0 }
@@ -97,14 +146,16 @@ export class MiniCodeGraph {
     }
   }
 
-  async index(): Promise<ExtractionResult> {
+  async index(excludePatterns?: string[]): Promise<ExtractionResult> {
     await this.orchestrator.init()
-    return this.orchestrator.indexProject(this.projectRoot)
+    const patterns = [...(this.config.exclude ?? []), ...(excludePatterns ?? [])]
+    return this.orchestrator.indexProject(this.projectRoot, undefined, patterns)
   }
 
-  async indexMultiModule(): Promise<ExtractionResult> {
+  async indexMultiModule(excludePatterns?: string[]): Promise<ExtractionResult> {
     await this.orchestrator.init()
-    return this.orchestrator.indexMultiModule(this.projectRoot)
+    const patterns = [...(this.config.exclude ?? []), ...(excludePatterns ?? [])]
+    return this.orchestrator.indexMultiModule(this.projectRoot, patterns)
   }
 
   async sync(): Promise<ExtractionResult> {
@@ -269,6 +320,7 @@ export class MiniCodeGraph {
   }
 
   close(): void {
+    this.orchestrator.stopWorkers()
     this.watcher?.stop()
     this.db.close()
   }

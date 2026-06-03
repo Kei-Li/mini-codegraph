@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, unlinkSync, chmodSync, mkdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { execSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 
 export type GitHookName = 'post-commit' | 'post-merge' | 'post-checkout'
 
@@ -17,7 +17,7 @@ export interface GitHookResult {
 
 export function isGitRepo(projectRoot: string): boolean {
   try {
-    const out = execSync('git rev-parse --is-inside-work-tree', {
+    const out = execFileSync('git', ['rev-parse', '--is-inside-work-tree'], {
       cwd: projectRoot,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -31,7 +31,7 @@ export function isGitRepo(projectRoot: string): boolean {
 
 function gitHooksDir(projectRoot: string): string | null {
   try {
-    const out = execSync('git rev-parse --git-path hooks', {
+    const out = execFileSync('git', ['rev-parse', '--git-path', 'hooks'], {
       cwd: projectRoot,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -109,7 +109,7 @@ export function installGitSyncHook(
     }
 
     writeFileSync(file, content)
-    try { chmodSync(file, 0o755) } catch {}
+    try { chmodSync(file, 0o755) } catch { /* silent */ }
     installed.push(hook)
   }
 
@@ -139,7 +139,7 @@ export function removeGitSyncHook(
       unlinkSync(file)
     } else {
       writeFileSync(file, `${stripped.replace(/\s*$/, '')}\n`)
-      try { chmodSync(file, 0o755) } catch {}
+      try { chmodSync(file, 0o755) } catch { /* silent */ }
     }
     removed.push(hook)
   }

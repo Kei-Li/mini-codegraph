@@ -36,7 +36,7 @@ export function detectSpring(projectRoot: string): FrameworkDetectionResult | nu
       if (content.includes('spring-boot') || content.includes('springframework')) {
         return { name: 'spring-boot', version: 'detected', confidence: 0.9 }
       }
-    } catch {}
+    } catch { /* silent */ }
   }
 
   if (existsSync(buildGradlePath)) {
@@ -45,7 +45,7 @@ export function detectSpring(projectRoot: string): FrameworkDetectionResult | nu
       if (content.includes('spring-boot') || content.includes('springframework')) {
         return { name: 'spring-boot', version: 'detected', confidence: 0.9 }
       }
-    } catch {}
+    } catch { /* silent */ }
   }
 
   if (existsSync(buildGradleKtsPath)) {
@@ -54,7 +54,7 @@ export function detectSpring(projectRoot: string): FrameworkDetectionResult | nu
       if (content.includes('spring-boot') || content.includes('springframework')) {
         return { name: 'spring-boot', version: 'detected', confidence: 0.9 }
       }
-    } catch {}
+    } catch { /* silent */ }
   }
 
   const srcDir = join(projectRoot, 'src')
@@ -68,9 +68,9 @@ export function detectSpring(projectRoot: string): FrameworkDetectionResult | nu
           if (content.includes('@SpringBootApplication') || content.includes('@RestController')) {
             return { name: 'spring-boot', version: 'detected', confidence: 0.8 }
           }
-        } catch {}
+        } catch { /* silent */ }
       }
-    } catch {}
+    } catch { /* silent */ }
   }
 
   return null
@@ -183,7 +183,7 @@ function resolveConfigValue(
           }
         }
       }
-    } catch {}
+    } catch { /* silent */ }
   }
 
   return null
@@ -306,7 +306,7 @@ export function findMulitModuleProjects(parentDir: string): string[] {
       while ((m = moduleRegex.exec(content)) !== null) {
         modules.push(join(parentDir, m[1].trim()))
       }
-    } catch {}
+    } catch { /* silent */ }
   }
 
   const settingsGradle = join(parentDir, 'settings.gradle')
@@ -318,7 +318,7 @@ export function findMulitModuleProjects(parentDir: string): string[] {
       while ((m = includeRegex.exec(content)) !== null) {
         modules.push(join(parentDir, m[1].trim().replace(':', '/')))
       }
-    } catch {}
+    } catch { /* silent */ }
   }
 
   const entries = readdirSync(parentDir, { withFileTypes: true })

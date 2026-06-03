@@ -6,7 +6,7 @@ export function extractJpaEntities(source: string, filePath: string): JpaEntity[
 
   if (!source.includes('@Entity') && !source.includes('@MappedSuperclass')) return entities
 
-  const classMatch = source.match(/(?:public\s+)?(?:abstract\s+)?class\s+(\w+)/)
+  const classMatch = source.match(/(?:public\s+)?(?:abstract\s+)?\bclass\s+(\w+)/)
   if (!classMatch) return entities
 
   const className = classMatch[1]
@@ -33,7 +33,7 @@ export function extractJpaEntities(source: string, filePath: string): JpaEntity[
     })
   }
 
-  const relMatches = source.matchAll(/@(OneToMany|ManyToOne|OneToOne|ManyToMany)\s*\(([^)]*)\)\s*(?:private\s+)?(\w+)\s*<\s*(\w+)\s*>?\s*(\w+)\s*;?/g)
+  const relMatches = source.matchAll(/@(OneToMany|ManyToOne|OneToOne|ManyToMany)\s*\(([^)]*)\)\s*(?:private\s+)?(\w+)(?:\s*<\s*(\w+)\s*>)?\s*(\w+)\s*;?/g)
   for (const rm of relMatches) {
     const relType = rm[1]
     const relBody = rm[2] || ''

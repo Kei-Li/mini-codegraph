@@ -1,6 +1,6 @@
 import { realpathSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { execSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 
 export interface WorktreeIndexMismatch {
   worktreeRoot: string
@@ -9,7 +9,7 @@ export interface WorktreeIndexMismatch {
 
 export function gitWorktreeRoot(dir: string): string | null {
   try {
-    const out = execSync('git rev-parse --show-toplevel', {
+    const out = execFileSync('git', ['rev-parse', '--show-toplevel'], {
       cwd: dir,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],

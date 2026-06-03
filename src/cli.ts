@@ -3,7 +3,7 @@
 import { Command } from 'commander'
 import { resolve, join } from 'node:path'
 import { existsSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs'
-import { execSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { MiniCodeGraph } from './index.js'
 import { StdioTransport } from './mcp/stdio-transport.js'
@@ -27,8 +27,10 @@ program
   .option('-i, --index', 'Also index after initialization')
   .option('-y, --yes', 'Non-interactive, accept defaults')
   .option('--multi-module', 'Discover and initialize sub-modules (Maven/Gradle multi-module)')
-  .action(async (path: string, options: { index?: boolean; yes?: boolean; multiModule?: boolean }) => {
+  .option('-e, --exclude <patterns>', 'Comma-separated glob patterns to exclude (e.g. "generated-sources/**,**/test/**")')
+  .action(async (path: string, options: { index?: boolean; yes?: boolean; multiModule?: boolean; exclude?: string }) => {
     const resolvedPath = resolve(path)
+    const excludePatterns = options.exclude?.split(',').map(s => s.trim()).filter(Boolean)
 
     if (options.multiModule) {
       const { cg, modules } = MiniCodeGraph.initMultiModule(resolvedPath)
@@ -45,7 +47,7 @@ program
 
       if (options.index) {
         console.error('\nIndexing all modules...')
-        const result = await cg.indexMultiModule()
+        const result = await cg.indexMultiModule(excludePatterns)
         const stats = cg.getGraph().getStats()
         console.error(`\nIndexed ${stats.modules} modules, ${stats.files} files, ${stats.nodes} nodes, ${stats.edges} edges`)
         if (result.errors.length > 0) {
@@ -65,7 +67,7 @@ program
 
     if (options.index) {
       console.error('Indexing...')
-      const result = await cg.index()
+      const result = await cg.index(excludePatterns)
       const stats = cg.getGraph().getStats()
       console.error(`Indexed ${stats.files} files, ${stats.nodes} nodes, ${stats.edges} edges`)
     }
@@ -78,9 +80,33 @@ program
   .description('Index all supported files in the project')
   .argument('[path]', 'Project root path', process.cwd())
   .option('-f, --force', 'Force re-index all files')
+  .option('--changed', 'Only index git-changed files (incremental)')
   .option('--multi-module', 'Index as multi-module (Maven/Gradle multi-module parent)')
-  .action(async (path: string, options: { force?: boolean; multiModule?: boolean }) => {
+  .option('-e, --exclude <patterns>', 'Comma-separated glob patterns to exclude (e.g. "generated-sources/**,**/test/**")')
+  .option('-j, --json', 'Output structured JSON summary')
+  .action(async (path: string, options: { force?: boolean; changed?: boolean; multiModule?: boolean; exclude?: string; json?: boolean }) => {
     const resolvedPath = resolve(path)
+    const excludePatterns = options.exclude?.split(',').map(s => s.trim()).filter(Boolean)
+
+    if (options.changed) {
+      const cg = MiniCodeGraph.open(resolvedPath)
+      if (!cg) {
+        console.error('No index found. Run full index first.')
+        process.exit(1)
+      }
+      const result = await cg.sync()
+      if (options.json) {
+        console.log(JSON.stringify({
+          new_nodes: result.nodes.length,
+          new_edges: result.edges.length,
+          errors: result.errors.length,
+        }, null, 2))
+      } else {
+        console.error(`Synced ${result.nodes.length} new nodes, ${result.edges.length} new edges`)
+      }
+      cg.close()
+      return
+    }
 
     if (options.multiModule) {
       const cg = MiniCodeGraph.open(resolvedPath)
@@ -90,7 +116,7 @@ program
           console.error('No sub-modules found.')
           process.exit(1)
         }
-        const result = await newCg.indexMultiModule()
+        const result = await newCg.indexMultiModule(excludePatterns)
         const stats = newCg.getGraph().getStats()
         console.log(JSON.stringify({
           modules: stats.modules,
@@ -103,7 +129,7 @@ program
         return
       }
 
-      const result = await cg.indexMultiModule()
+      const result = await cg.indexMultiModule(excludePatterns)
       const stats = cg.getGraph().getStats()
       console.log(JSON.stringify({
         modules: stats.modules,
@@ -117,7 +143,7 @@ program
     }
 
     const cg = MiniCodeGraph.init(resolvedPath)
-    const result = await cg.index()
+    const result = await cg.index(excludePatterns)
 
     const stats = cg.getGraph().getStats()
     console.log(JSON.stringify({
@@ -186,6 +212,38 @@ program
 
     const modules = cg.getModules()
     console.log(JSON.stringify({ modules, count: modules.length }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('export')
+  .description('Export graph as JSON')
+  .argument('[path]', 'Project root path', process.cwd())
+  .option('-o, --output <file>', 'Output file path (default: stdout)')
+  .option('--pretty', 'Pretty-print JSON')
+  .action((path: string, options: { output?: string; pretty?: boolean }) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) {
+      console.error('No index found.')
+      process.exit(1)
+    }
+
+    const graph = cg.getGraph()
+    const qm = graph.getQueries()
+    const nodes = qm.getAllNodes()
+    const edges = qm.getAllEdges()
+    const exportData = { nodes, edges, exportedAt: new Date().toISOString() }
+    const json = options.pretty ? JSON.stringify(exportData, null, 2) : JSON.stringify(exportData)
+
+    if (options.output) {
+      const outPath = resolve(options.output)
+      writeFileSync(outPath, json, 'utf-8')
+      console.error(`Exported ${nodes.length} nodes, ${edges.length} edges to ${outPath}`)
+    } else {
+      console.log(json)
+    }
+
     cg.close()
   })
 
@@ -1156,6 +1214,86 @@ program
   })
 
 program
+  .command('react')
+  .description('Show React components, hooks, stores, and data queries')
+  .argument('[path]', 'Project root path', process.cwd())
+  .option('--detail', 'Include hooks, props, and children details')
+  .option('-l, --limit <number>', 'Max results (default: 50)', parseInt)
+  .action((path: string, options: { detail?: boolean; limit?: number }) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    const graph = cg.getGraph()
+    const limit = Math.min(Math.max(1, options.limit ?? 50), 500)
+    const components = graph.getReactComponents(limit)
+    const stores = graph.getReactStores(limit)
+    const queries = graph.getReactQueries(limit)
+    const result: any = {
+      components: options.detail ? components : components.map((c: any) => ({ componentName: c.componentName, filePath: c.filePath, hookCount: c.hooks.length })),
+      stores,
+      queries,
+      total: components.length, truncated: components.length >= limit,
+    }
+    console.log(JSON.stringify(result, null, 2))
+    cg.close()
+  })
+
+program
+  .command('mongo')
+  .description('Show MongoDB entities — @Document collections, repositories, template usage')
+  .argument('[path]', 'Project root path', process.cwd())
+  .option('-l, --limit <number>', 'Max results (default: 50)', parseInt)
+  .action((path: string, options: { limit?: number }) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    const limit = Math.min(Math.max(1, options.limit ?? 50), 500)
+    const all = cg.getGraph().getMongoEntities(limit)
+    console.log(JSON.stringify({ mongoEntities: all, total: all.length, truncated: all.length >= limit }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('redis')
+  .description('Show Redis hashes, repositories, and template operations')
+  .argument('[path]', 'Project root path', process.cwd())
+  .option('-l, --limit <number>', 'Max results (default: 50)', parseInt)
+  .action((path: string, options: { limit?: number }) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    const limit = Math.min(Math.max(1, options.limit ?? 50), 500)
+    const hashes = cg.getGraph().getRedisHashes(limit)
+    const templates = cg.getGraph().getRedisTemplates(limit)
+    console.log(JSON.stringify({
+      redisHashes: hashes, redisHashesTotal: hashes.length,
+      redisTemplates: templates, redisTemplatesTotal: templates.length,
+      truncated: hashes.length >= limit || templates.length >= limit,
+    }, null, 2))
+    cg.close()
+  })
+
+program
+  .command('sql')
+  .description('Show SQL tables and statements — DDL, MyBatis SQL, JPA @Query, JDBC')
+  .argument('[path]', 'Project root path', process.cwd())
+  .option('-l, --limit <number>', 'Max results (default: 50)', parseInt)
+  .action((path: string, options: { limit?: number }) => {
+    const resolvedPath = resolve(path)
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) { console.error('No index found.'); process.exit(1) }
+    const limit = Math.min(Math.max(1, options.limit ?? 50), 500)
+    const tables = cg.getGraph().getSqlTables(limit)
+    const stmts = cg.getGraph().getSqlStatements(limit)
+    console.log(JSON.stringify({
+      tables: tables.slice(0, limit), tablesTotal: tables.length,
+      sqlStatements: stmts.slice(0, limit), sqlStatementsTotal: stmts.length,
+      truncated: tables.length > limit || stmts.length > limit,
+    }, null, 2))
+    cg.close()
+  })
+
+program
   .command('install')
   .description('Install and configure mini-codegraph for AI agents')
   .option('--target <agents>', 'Comma-separated agent targets (opencode, claude, cursor, codex, gemini, hermes, antigravity, kiro)')
@@ -1192,7 +1330,7 @@ program
           if (existsSync(configPath)) {
             try {
               opencodeConfig = JSON.parse(readFileSync(configPath, 'utf-8'))
-            } catch {}
+            } catch { /* silent */ }
           }
 
           opencodeConfig.mcpServers = opencodeConfig.mcpServers || {}
@@ -1216,7 +1354,7 @@ program
           if (existsSync(configPath)) {
             try {
               claudeConfig = JSON.parse(readFileSync(configPath, 'utf-8'))
-            } catch {}
+            } catch { /* silent */ }
           }
 
           claudeConfig.mcpServers = claudeConfig.mcpServers || {}
@@ -1237,7 +1375,7 @@ program
           if (existsSync(configPath)) {
             try {
               cursorConfig = JSON.parse(readFileSync(configPath, 'utf-8'))
-            } catch {}
+            } catch { /* silent */ }
           }
           cursorConfig.mcpServers = cursorConfig.mcpServers || {}
           cursorConfig.mcpServers['mini-codegraph'] = {
@@ -1255,7 +1393,7 @@ program
           const configPath = join(process.cwd(), '.codex.json')
           let codexConfig: any = {}
           if (existsSync(configPath)) {
-            try { codexConfig = JSON.parse(readFileSync(configPath, 'utf-8')) } catch {}
+            try { codexConfig = JSON.parse(readFileSync(configPath, 'utf-8')) } catch { /* silent */ }
           }
           codexConfig.mcpServers = codexConfig.mcpServers || {}
           codexConfig.mcpServers['mini-codegraph'] = {
@@ -1271,7 +1409,7 @@ program
           const configPath = join(homedir(), '.gemini', 'mcp.json')
           let geminiConfig: any = { mcpServers: {} }
           if (existsSync(configPath)) {
-            try { geminiConfig = JSON.parse(readFileSync(configPath, 'utf-8')) } catch {}
+            try { geminiConfig = JSON.parse(readFileSync(configPath, 'utf-8')) } catch { /* silent */ }
           }
           geminiConfig.mcpServers = geminiConfig.mcpServers || {}
           geminiConfig.mcpServers['mini-codegraph'] = {
@@ -1290,7 +1428,7 @@ program
           const configPath = join(configDir, 'config.json')
           let hermesConfig: any = { mcpServers: {} }
           if (existsSync(configPath)) {
-            try { hermesConfig = JSON.parse(readFileSync(configPath, 'utf-8')) } catch {}
+            try { hermesConfig = JSON.parse(readFileSync(configPath, 'utf-8')) } catch { /* silent */ }
           }
           hermesConfig.mcpServers = hermesConfig.mcpServers || {}
           hermesConfig.mcpServers['mini-codegraph'] = {
@@ -1308,7 +1446,7 @@ program
           const configPath = join(configDir, 'mcp.json')
           let agConfig: any = { mcpServers: {} }
           if (existsSync(configPath)) {
-            try { agConfig = JSON.parse(readFileSync(configPath, 'utf-8')) } catch {}
+            try { agConfig = JSON.parse(readFileSync(configPath, 'utf-8')) } catch { /* silent */ }
           }
           agConfig.mcpServers = agConfig.mcpServers || {}
           agConfig.mcpServers['mini-codegraph'] = {
@@ -1325,7 +1463,7 @@ program
           const configPath = join(homedir(), '.kiro', 'mcp.json')
           let kiroConfig: any = { mcpServers: {} }
           if (existsSync(configPath)) {
-            try { kiroConfig = JSON.parse(readFileSync(configPath, 'utf-8')) } catch {}
+            try { kiroConfig = JSON.parse(readFileSync(configPath, 'utf-8')) } catch { /* silent */ }
           }
           kiroConfig.mcpServers = kiroConfig.mcpServers || {}
           kiroConfig.mcpServers['mini-codegraph'] = {
@@ -1358,11 +1496,52 @@ program
     }
   })
 
+program
+  .command('exclude')
+  .description('Manage file/directory exclusion patterns for indexing')
+  .argument('<action>', 'add, remove, or list')
+  .argument('[pattern]', 'Glob pattern to exclude (e.g. "generated-sources/**" or "**/*.gen.*")')
+  .action(async (action: string, pattern: string) => {
+    const projectRoot = process.cwd()
+    const cg = MiniCodeGraph.open(projectRoot)
+    if (!cg) {
+      console.error('No mini-codegraph database found. Run "mini-cg init" first.')
+      process.exit(1)
+    }
+
+    switch (action) {
+      case 'add':
+        if (!pattern) { console.error('Usage: mini-cg exclude add <pattern>'); process.exit(1) }
+        cg.addExclude(pattern)
+        console.error(`Added exclude pattern: ${pattern}`)
+        break
+      case 'remove':
+        if (!pattern) { console.error('Usage: mini-cg exclude remove <pattern>'); process.exit(1) }
+        cg.removeExclude(pattern)
+        console.error(`Removed exclude pattern: ${pattern}`)
+        break
+      case 'list':
+        const excludes = cg.listExcludes()
+        if (excludes.length === 0) {
+          console.log('No exclude patterns configured.')
+        } else {
+          console.log('Exclude patterns:')
+          for (const e of excludes) console.log(`  ${e}`)
+        }
+        break
+      default:
+        console.error('Unknown action. Use: add, remove, or list')
+        process.exit(1)
+    }
+
+    cg.close()
+  })
+
 function ensureCliOnPath(): string | null {
   try {
-    execSync('mini-cg --version', { stdio: 'pipe' })
+    execFileSync('mini-cg', ['--version'], { stdio: 'pipe' })
     return 'mini-cg'
-  } catch {}
+  } catch { /* silent */ }
 
   const distCli = join(process.cwd(), 'dist', 'cli.js')
   if (existsSync(distCli)) {
@@ -1370,12 +1549,12 @@ function ensureCliOnPath(): string | null {
   }
 
   try {
-    const npmRoot = execSync('npm root -g', { encoding: 'utf-8' }).trim()
+    const npmRoot = execFileSync('npm', ['root', '-g'], { encoding: 'utf-8' }).trim()
     const npmCli = join(npmRoot, 'mini-codegraph', 'dist', 'cli.js')
     if (existsSync(npmCli)) {
       return `node ${npmCli}`
     }
-  } catch {}
+  } catch { /* silent */ }
 
   return null
 }
