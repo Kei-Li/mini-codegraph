@@ -15,6 +15,7 @@ import { findMulitModuleProjects } from './resolution/frameworks/java.js'
 
 export interface ProjectConfig {
   exclude: string[]
+  workspace?: string
 }
 
 const DEFAULT_CONFIG: ProjectConfig = { exclude: [] }
@@ -35,7 +36,7 @@ export class MiniCodeGraph {
   constructor(projectRoot: string, dbPath?: string) {
     this.projectRoot = projectRoot
     this.dataDir = join(projectRoot, '.mini-codegraph')
-    const resolvedDbPath = dbPath ?? join(this.dataDir, 'mini-cg.db')
+    const resolvedDbPath = dbPath ?? join(this.dataDir, 'mini-codegraph.db')
 
     this.db = new DatabaseConnection(resolvedDbPath)
     this.db.open()
@@ -45,14 +46,18 @@ export class MiniCodeGraph {
     this.config = this.loadConfig()
   }
 
-  static init(projectRoot: string, indexNow = false): MiniCodeGraph {
+  static init(projectRoot: string, indexNow = false, workspace?: string): MiniCodeGraph {
     const cg = new MiniCodeGraph(projectRoot)
     cg.ensureConfig()
+    if (workspace) {
+      cg.config.workspace = workspace
+      cg.saveConfig()
+    }
     return cg
   }
 
   private configPath(): string {
-    return join(this.dataDir, 'config.json')
+    return join(this.dataDir, 'workspace.yml')
   }
 
   private ensureConfig(): void {
@@ -102,13 +107,17 @@ export class MiniCodeGraph {
 
       if (existsSync(join(dir, 'pom.xml'))) buildSystem = 'maven'
       else if (existsSync(join(dir, 'build.gradle'))) buildSystem = 'gradle'
-      else if (existsSync(join(dir, 'package.json'))) {
-        buildSystem = 'npm'
+      else if (existsSync(join(dir, 'package.json'))) buildSystem = 'npm'
+
+      // Detect language from package.json regardless of build system
+      const pkgPath = join(dir, 'package.json')
+      if (existsSync(pkgPath)) {
         try {
-          const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8'))
+          const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))
           const deps = { ...pkg.dependencies, ...pkg.devDependencies } as Record<string, string>
           if (deps.vue || deps.nuxt) language = 'vue'
-          else language = 'typescript'
+          else if (deps.react || deps['react-dom'] || deps.next) language = 'typescript'
+          else if (buildSystem === 'npm') language = 'typescript'
         } catch { /* silent */ }
       }
 
@@ -131,7 +140,7 @@ export class MiniCodeGraph {
   }
 
   static open(projectRoot: string): MiniCodeGraph | null {
-    const dbPath = join(projectRoot, '.mini-codegraph', 'mini-cg.db')
+    const dbPath = join(projectRoot, '.mini-codegraph', 'mini-codegraph.db')
     if (!existsSync(dbPath)) return null
     return new MiniCodeGraph(projectRoot, dbPath)
   }
@@ -139,7 +148,7 @@ export class MiniCodeGraph {
   static findProjectRoot(startPath: string): string | null {
     let current = startPath
     while (true) {
-      if (existsSync(join(current, '.mini-codegraph', 'mini-cg.db'))) return current
+      if (existsSync(join(current, '.mini-codegraph', 'mini-codegraph.db'))) return current
       const parent = join(current, '..')
       if (parent === current) return null
       current = parent
@@ -160,7 +169,7 @@ export class MiniCodeGraph {
 
   async sync(): Promise<ExtractionResult> {
     await this.orchestrator.init()
-    const lock = new FileLock(join(this.dataDir, 'sync.lock'))
+    const lock = new FileLock(join(this.dataDir, '.lock'))
     return lock.withLockAsync(async () => {
     const result: ExtractionResult = { nodes: [], edges: [], errors: [] }
 
@@ -238,6 +247,12 @@ export class MiniCodeGraph {
       const contentHash = computeContentHash(content)
 
       if (tracked && tracked.contentHash === contentHash) continue
+
+      // Large file skip (>1MB)
+      if (content.length > 1_048_576) {
+        result.errors.push(`Skipped large file: ${filePath} (${content.length} bytes)`)
+        continue
+      }
 
       try {
         const fileResult = await this.orchestrator.indexFile(fullPath, this.projectRoot)
@@ -317,6 +332,12 @@ export class MiniCodeGraph {
     )
 
     this.watcher.start()
+  }
+
+  async initWorkspace(workspaceRoot: string): Promise<{ symbolsAdded: number; refsAdded: number }> {
+    const { WorkspaceSync } = await import('./workspace/sync.js')
+    const sync = new WorkspaceSync(this.queries, workspaceRoot, this.projectRoot)
+    return sync.refresh()
   }
 
   close(): void {

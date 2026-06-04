@@ -10,6 +10,7 @@ import { parseJavaFile } from './languages/java.js'
 import { parseTypeScriptFile } from './languages/typescript.js'
 import { parsePythonFile } from './languages/python.js'
 import { parseVueFile } from './languages/vue.js'
+import { parseKotlinFile } from './languages/kotlin.js'
 import { scanDirectory, findFiles, computeContentHash, languageForFile, validatePathWithinRoot } from '../utils.js'
 import type { MiniCodeGraphNode, MiniCodeGraphEdge, FileRecord, ExtractionResult, ModuleInfo, MessageQueueBinding } from '../types.js'
 import type { WorkerResponse } from './worker-types.js'
@@ -243,7 +244,7 @@ export class ExtractionOrchestrator {
     const allMqBindings: MessageQueueBinding[] = []
     for (const mf of mqFiles) {
       try {
-        const mqSource = readFileSync(mf, 'utf-8')
+        const mqSource = readFileSync(join(projectRoot, mf), 'utf-8')
         if (!mqSource.includes('@EnableBinding') && !mqSource.includes('StreamBridge') &&
             !mqSource.includes('spring.cloud.stream') && !mqSource.includes('rabbit') &&
             !mqSource.includes('kafka') && !mqSource.includes('jms') &&
@@ -543,7 +544,9 @@ export class ExtractionOrchestrator {
           ? parsePythonFile(tree, source, relPath, lang.name)
           : lang.name === 'vue'
             ? parseVueFile(parser, source, relPath, lang.name)
-            : parseTypeScriptFile(tree, source, relPath, lang.name)
+            : lang.name === 'kotlin'
+              ? parseKotlinFile(source, relPath, parser, { language: 'kotlin', languageName: 'kotlin', namespaceDelimiter: '.', supportFullText: true })
+              : parseTypeScriptFile(tree, source, relPath, lang.name)
 
       this.queries.deleteNodesForFile(relPath)
 

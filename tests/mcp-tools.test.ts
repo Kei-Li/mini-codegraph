@@ -37,24 +37,24 @@ describe('MCP tools', () => {
       const tools = createTools(graph)
       const names = tools.map(t => t.name)
 
-      expect(names).toContain('mini_codegraph_search')
-      expect(names).toContain('mini_codegraph_context')
-      expect(names).toContain('mini_codegraph_trace')
-      expect(names).toContain('mini_codegraph_callers')
-      expect(names).toContain('mini_codegraph_callees')
-      expect(names).toContain('mini_codegraph_node')
-      expect(names).toContain('mini_codegraph_impact')
-      expect(names).toContain('mini_codegraph_files')
-      expect(names).toContain('mini_codegraph_status')
-      expect(names).toContain('mini_codegraph_explore')
-      expect(names).toContain('mini_codegraph_architecture')
-      expect(names).toContain('mini_codegraph_feign')
-      expect(names).toContain('mini_codegraph_mybatis')
-      expect(names).toContain('mini_codegraph_modules')
-      expect(names).toContain('mini_codegraph_react')
-      expect(names).toContain('mini_codegraph_mongo')
-      expect(names).toContain('mini_codegraph_redis')
-      expect(names).toContain('mini_codegraph_sql')
+      expect(names).toContain('mini_cg_search')
+      expect(names).toContain('mini_cg_context')
+      expect(names).toContain('mini_cg_trace')
+      expect(names).toContain('mini_cg_callers')
+      expect(names).toContain('mini_cg_callees')
+      expect(names).toContain('mini_cg_node')
+      expect(names).toContain('mini_cg_impact')
+      expect(names).toContain('mini_cg_files')
+      expect(names).toContain('mini_cg_status')
+      expect(names).toContain('mini_cg_explore')
+      expect(names).toContain('mini_cg_architecture')
+      expect(names).toContain('mini_cg_feign')
+      expect(names).toContain('mini_cg_mybatis')
+      expect(names).toContain('mini_cg_modules')
+      expect(names).toContain('mini_cg_react')
+      expect(names).toContain('mini_cg_mongo')
+      expect(names).toContain('mini_cg_redis')
+      expect(names).toContain('mini_cg_sql')
     })
 
     it('every tool has name, description, inputSchema, and handler', () => {
@@ -63,7 +63,7 @@ describe('MCP tools', () => {
 
       for (const tool of tools) {
         expect(typeof tool.name).toBe('string')
-        expect(tool.name).toMatch(/^mini_codegraph_/)
+        expect(tool.name).toMatch(/^mini_cg_/)
         expect(typeof tool.description).toBe('string')
         expect(tool.description.length).toBeGreaterThan(0)
         expect(typeof tool.inputSchema).toBe('object')
@@ -72,11 +72,11 @@ describe('MCP tools', () => {
     })
   })
 
-  describe('mini_codegraph_search', () => {
+  describe('mini_cg_search', () => {
     it('returns empty results when no query', async () => {
       const graph = createMockGraph()
       const tools = createTools(graph)
-      const tool = tools.find(t => t.name === 'mini_codegraph_search')!
+      const tool = tools.find(t => t.name === 'mini_cg_search')!
 
       const result = await tool.handler({ query: '' }, graph)
       expect(result.results).toEqual([])
@@ -91,7 +91,7 @@ describe('MCP tools', () => {
         ]),
       })
       const tools = createTools(graph)
-      const tool = tools.find(t => t.name === 'mini_codegraph_search')!
+      const tool = tools.find(t => t.name === 'mini_cg_search')!
 
       const result = await tool.handler({ query: 'Foo', kind: 'class', limit: 10, offset: 0 }, graph)
       expect(result.total).toBe(1)
@@ -106,7 +106,7 @@ describe('MCP tools', () => {
       }))
       const graph = createMockGraph({ search: vi.fn().mockReturnValue(items) })
       const tools = createTools(graph)
-      const tool = tools.find(t => t.name === 'mini_codegraph_search')!
+      const tool = tools.find(t => t.name === 'mini_cg_search')!
 
       const result = await tool.handler({ query: 'sym', limit: 5, offset: 0 }, graph)
       expect(result.results.length).toBe(5)
@@ -115,13 +115,13 @@ describe('MCP tools', () => {
     })
   })
 
-  describe('mini_codegraph_status', () => {
+  describe('mini_cg_status', () => {
     it('returns stats from graph', async () => {
       const graph = createMockGraph({
         getStats: vi.fn().mockReturnValue({ files: 42, nodes: 100, edges: 200, modules: 3 }),
       })
       const tools = createTools(graph)
-      const tool = tools.find(t => t.name === 'mini_codegraph_status')!
+      const tool = tools.find(t => t.name === 'mini_cg_status')!
 
       const result = await tool.handler({}, graph)
       expect(result.stats.files).toBe(42)
@@ -130,11 +130,11 @@ describe('MCP tools', () => {
     })
   })
 
-  describe('mini_codegraph_node', () => {
+  describe('mini_cg_node', () => {
     it('returns error when symbol not found', async () => {
       const graph = createMockGraph({ search: vi.fn().mockReturnValue([]) })
       const tools = createTools(graph)
-      const tool = tools.find(t => t.name === 'mini_codegraph_node')!
+      const tool = tools.find(t => t.name === 'mini_cg_node')!
 
       const result = await tool.handler({ symbol: 'NonExistent' }, graph)
       expect(result.error).toBe('Symbol not found')
@@ -149,7 +149,7 @@ describe('MCP tools', () => {
         }]),
       })
       const tools = createTools(graph)
-      const tool = tools.find(t => t.name === 'mini_codegraph_node')!
+      const tool = tools.find(t => t.name === 'mini_cg_node')!
 
       const result = await tool.handler({ symbol: 'UserService', includeCode: false }, graph)
       expect(result.name).toBe('UserService')
@@ -158,11 +158,11 @@ describe('MCP tools', () => {
     })
   })
 
-  describe('mini_codegraph_callers', () => {
+  describe('mini_cg_callers', () => {
     it('returns empty when no symbol', async () => {
       const graph = createMockGraph()
       const tools = createTools(graph)
-      const tool = tools.find(t => t.name === 'mini_codegraph_callers')!
+      const tool = tools.find(t => t.name === 'mini_cg_callers')!
 
       const result = await tool.handler({ symbol: '' }, graph)
       expect(result.callers).toEqual([])
@@ -177,7 +177,7 @@ describe('MCP tools', () => {
         ]),
       })
       const tools = createTools(graph)
-      const tool = tools.find(t => t.name === 'mini_codegraph_callers')!
+      const tool = tools.find(t => t.name === 'mini_cg_callers')!
 
       const result = await tool.handler({ symbol: 'foo', limit: 10, offset: 0 }, graph)
       expect(result.callers).toHaveLength(2)
@@ -185,7 +185,7 @@ describe('MCP tools', () => {
     })
   })
 
-  describe('mini_codegraph_impact', () => {
+  describe('mini_cg_impact', () => {
     it('returns impacted nodes', async () => {
       const graph = createMockGraph({
         search: vi.fn().mockReturnValue([{ node: { id: '1', name: 'foo', kind: 'function' }, snippets: [], score: 1 }]),
@@ -194,7 +194,7 @@ describe('MCP tools', () => {
         ]),
       })
       const tools = createTools(graph)
-      const tool = tools.find(t => t.name === 'mini_codegraph_impact')!
+      const tool = tools.find(t => t.name === 'mini_cg_impact')!
 
       const result = await tool.handler({ symbol: 'foo', depth: 2, limit: 10 }, graph)
       expect(result.impacted).toHaveLength(1)
@@ -202,7 +202,7 @@ describe('MCP tools', () => {
     })
   })
 
-  describe('mini_codegraph_files', () => {
+  describe('mini_cg_files', () => {
     it('returns file listing', async () => {
       const graph = createMockGraph({
         getFileListing: vi.fn().mockReturnValue([
@@ -211,7 +211,7 @@ describe('MCP tools', () => {
         ]),
       })
       const tools = createTools(graph)
-      const tool = tools.find(t => t.name === 'mini_codegraph_files')!
+      const tool = tools.find(t => t.name === 'mini_cg_files')!
 
       const result = await tool.handler({ pattern: 'src/**/*.ts', limit: 10 }, graph)
       expect(result.files).toHaveLength(2)
@@ -225,20 +225,20 @@ describe('MCP tools', () => {
         ]),
       })
       const tools = createTools(graph)
-      const tool = tools.find(t => t.name === 'mini_codegraph_files')!
+      const tool = tools.find(t => t.name === 'mini_cg_files')!
 
       const result = await tool.handler({ pattern: '', includeMetadata: true, limit: 10 }, graph)
       expect(result.files[0].nodeCount).toBe(5)
     })
   })
 
-  describe('mini_codegraph_modules', () => {
+  describe('mini_cg_modules', () => {
     it('returns module stats', async () => {
       const graph = createMockGraph({
         getStats: vi.fn().mockReturnValue({ files: 10, nodes: 50, edges: 100, modules: 2 }),
       })
       const tools = createTools(graph)
-      const tool = tools.find(t => t.name === 'mini_codegraph_modules')!
+      const tool = tools.find(t => t.name === 'mini_cg_modules')!
 
       const result = await tool.handler({}, graph)
       expect(result.modules).toBe(2)
@@ -246,11 +246,11 @@ describe('MCP tools', () => {
     })
   })
 
-  describe('mini_codegraph_explore', () => {
+  describe('mini_cg_explore', () => {
     it('returns message when no symbols', async () => {
       const graph = createMockGraph()
       const tools = createTools(graph)
-      const tool = tools.find(t => t.name === 'mini_codegraph_explore')!
+      const tool = tools.find(t => t.name === 'mini_cg_explore')!
 
       const result = await tool.handler({ symbols: [] }, graph)
       expect(result).toBe('No symbols provided.')
@@ -271,7 +271,7 @@ describe('MCP tools', () => {
         ])),
       })
       const tools = createTools(graph)
-      const tool = tools.find(t => t.name === 'mini_codegraph_explore')!
+      const tool = tools.find(t => t.name === 'mini_cg_explore')!
 
       const result = await tool.handler({ symbols: ['UserService'], maxPerSymbol: 10 }, graph)
       expect(result).toContain('UserService')
@@ -280,7 +280,7 @@ describe('MCP tools', () => {
     })
   })
 
-  describe('mini_codegraph_architecture', () => {
+  describe('mini_cg_architecture', () => {
     it('returns architecture info', async () => {
       const graph = createMockGraph({
         findMicroserviceArchitecture: vi.fn().mockReturnValue({
@@ -290,7 +290,7 @@ describe('MCP tools', () => {
         }),
       })
       const tools = createTools(graph)
-      const tool = tools.find(t => t.name === 'mini_codegraph_architecture')!
+      const tool = tools.find(t => t.name === 'mini_cg_architecture')!
 
       const result = await tool.handler({}, graph)
       expect(result.modules).toHaveLength(1)
@@ -298,11 +298,11 @@ describe('MCP tools', () => {
     })
   })
 
-  describe('mini_codegraph_context', () => {
+  describe('mini_cg_context', () => {
     it('returns no task message when empty task', async () => {
       const graph = createMockGraph()
       const tools = createTools(graph)
-      const tool = tools.find(t => t.name === 'mini_codegraph_context')!
+      const tool = tools.find(t => t.name === 'mini_cg_context')!
 
       const result = await tool.handler({ task: '' }, graph)
       expect(result).toContain('(empty task)')
@@ -318,7 +318,7 @@ describe('MCP tools', () => {
         getContext: vi.fn().mockReturnValue({ callers: [], callees: [] }),
       })
       const tools = createTools(graph)
-      const tool = tools.find(t => t.name === 'mini_codegraph_context')!
+      const tool = tools.find(t => t.name === 'mini_cg_context')!
 
       const result = await tool.handler({ task: 'user service', maxNodes: 5, includeCode: true }, graph)
       expect(result).toContain('UserService')
@@ -338,7 +338,7 @@ describe('MCP tools', () => {
         getContext: vi.fn().mockReturnValue({ callers: [], callees: [] }),
       })
       const tools = createTools(graph)
-      const tool = tools.find(t => t.name === 'mini_codegraph_context')!
+      const tool = tools.find(t => t.name === 'mini_cg_context')!
 
       const result = await tool.handler({ task: 'sym', maxNodes: 3 }, graph)
       const symbolCount = (result.match(/## sym/g) || []).length
@@ -346,11 +346,11 @@ describe('MCP tools', () => {
     })
   })
 
-  describe('mini_codegraph_trace', () => {
+  describe('mini_cg_trace', () => {
     it('returns error when from/to missing', async () => {
       const graph = createMockGraph()
       const tools = createTools(graph)
-      const tool = tools.find(t => t.name === 'mini_codegraph_trace')!
+      const tool = tools.find(t => t.name === 'mini_cg_trace')!
 
       const result = await tool.handler({ from: '', to: '' }, graph)
       expect(result.error).toBeDefined()
@@ -369,7 +369,7 @@ describe('MCP tools', () => {
         ]),
       })
       const tools = createTools(graph)
-      const tool = tools.find(t => t.name === 'mini_codegraph_trace')!
+      const tool = tools.find(t => t.name === 'mini_cg_trace')!
 
       const result = await tool.handler({ from: 'start', to: 'end', maxPaths: 5 }, graph)
       expect(result.paths).toHaveLength(1)
@@ -378,7 +378,7 @@ describe('MCP tools', () => {
     })
   })
 
-  describe('mini_codegraph_feign', () => {
+  describe('mini_cg_feign', () => {
     it('returns feign clients', async () => {
       const graph = createMockGraph({
         getFeignClients: vi.fn().mockReturnValue([
@@ -390,7 +390,7 @@ describe('MCP tools', () => {
         ]),
       })
       const tools = createTools(graph)
-      const tool = tools.find(t => t.name === 'mini_codegraph_feign')!
+      const tool = tools.find(t => t.name === 'mini_cg_feign')!
 
       const result = await tool.handler({ includeMethods: true, limit: 10 }, graph)
       expect(result.clients).toHaveLength(1)
@@ -399,7 +399,7 @@ describe('MCP tools', () => {
     })
   })
 
-  describe('mini_codegraph_mybatis', () => {
+  describe('mini_cg_mybatis', () => {
     it('returns mybatis mappings', async () => {
       const graph = createMockGraph({
         getMyBatisMappings: vi.fn().mockReturnValue([
@@ -407,7 +407,7 @@ describe('MCP tools', () => {
         ]),
       })
       const tools = createTools(graph)
-      const tool = tools.find(t => t.name === 'mini_codegraph_mybatis')!
+      const tool = tools.find(t => t.name === 'mini_cg_mybatis')!
 
       const result = await tool.handler({ limit: 10 }, graph)
       expect(result.mappings).toHaveLength(1)
@@ -415,7 +415,7 @@ describe('MCP tools', () => {
     })
   })
 
-  describe('mini_codegraph_mongo', () => {
+  describe('mini_cg_mongo', () => {
     it('returns mongo entities', async () => {
       const graph = createMockGraph({
         getMongoEntities: vi.fn().mockReturnValue([
@@ -423,21 +423,21 @@ describe('MCP tools', () => {
         ]),
       })
       const tools = createTools(graph)
-      const tool = tools.find(t => t.name === 'mini_codegraph_mongo')!
+      const tool = tools.find(t => t.name === 'mini_cg_mongo')!
 
       const result = await tool.handler({ limit: 10 }, graph)
       expect(result.mongoEntities).toHaveLength(1)
     })
   })
 
-  describe('mini_codegraph_redis', () => {
+  describe('mini_cg_redis', () => {
     it('returns redis hashes and templates', async () => {
       const graph = createMockGraph({
         getRedisHashes: vi.fn().mockReturnValue([{ hashName: 'UserHash', filePath: 'a.java' }]),
         getRedisTemplates: vi.fn().mockReturnValue([{ templateName: 'redisTemplate', filePath: 'b.java' }]),
       })
       const tools = createTools(graph)
-      const tool = tools.find(t => t.name === 'mini_codegraph_redis')!
+      const tool = tools.find(t => t.name === 'mini_cg_redis')!
 
       const result = await tool.handler({ limit: 10 }, graph)
       expect(result.redisHashes).toHaveLength(1)
@@ -445,14 +445,14 @@ describe('MCP tools', () => {
     })
   })
 
-  describe('mini_codegraph_sql', () => {
+  describe('mini_cg_sql', () => {
     it('returns tables and statements', async () => {
       const graph = createMockGraph({
         getSqlTables: vi.fn().mockReturnValue([{ tableName: 'users', filePath: 'ddl.sql' }]),
         getSqlStatements: vi.fn().mockReturnValue([{ statement: 'SELECT * FROM users', filePath: 'mapper.xml' }]),
       })
       const tools = createTools(graph)
-      const tool = tools.find(t => t.name === 'mini_codegraph_sql')!
+      const tool = tools.find(t => t.name === 'mini_cg_sql')!
 
       const result = await tool.handler({ limit: 10 }, graph)
       expect(result.tables).toHaveLength(1)
@@ -460,7 +460,7 @@ describe('MCP tools', () => {
     })
   })
 
-  describe('mini_codegraph_react', () => {
+  describe('mini_cg_react', () => {
     it('returns components, stores, and queries', async () => {
       const graph = createMockGraph({
         getReactComponents: vi.fn().mockReturnValue([
@@ -470,7 +470,7 @@ describe('MCP tools', () => {
         getReactQueries: vi.fn().mockReturnValue([{ queryName: 'useUsers', filePath: 'queries.ts' }]),
       })
       const tools = createTools(graph)
-      const tool = tools.find(t => t.name === 'mini_codegraph_react')!
+      const tool = tools.find(t => t.name === 'mini_cg_react')!
 
       const result = await tool.handler({ detail: false, limit: 10 }, graph)
       expect(result.components).toHaveLength(1)

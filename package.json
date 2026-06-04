@@ -16,7 +16,7 @@
   },
   "type": "module",
   "bin": {
-    "mini-cg": "./dist/cli.js"
+    "mini-codegraph": "./dist/cli/index.js"
   },
   "files": [
     "dist",

@@ -5,6 +5,7 @@ import { parseJavaFile } from './languages/java.js'
 import { parseTypeScriptFile } from './languages/typescript.js'
 import { parsePythonFile } from './languages/python.js'
 import { parseVueFile } from './languages/vue.js'
+import { parseKotlinFile } from './languages/kotlin.js'
 import { computeContentHash } from '../utils.js'
 import type { WorkerRequest, WorkerResponse } from './worker-types.js'
 
@@ -81,7 +82,9 @@ parentPort?.on('message', async (msg: WorkerRequest) => {
           ? parsePythonFile(tree, source, msg.filePath, msg.language)
           : msg.language === 'vue'
             ? parseVueFile(parser, source, msg.filePath, msg.language)
-            : parseTypeScriptFile(tree, source, msg.filePath, msg.language)
+            : msg.language === 'kotlin'
+              ? parseKotlinFile(source, msg.filePath, parser, { language: 'kotlin', languageName: 'kotlin', namespaceDelimiter: '.', supportFullText: true })
+              : parseTypeScriptFile(tree, source, msg.filePath, msg.language)
 
       parentPort?.postMessage({
         type: 'parse-result',

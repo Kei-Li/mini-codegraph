@@ -13,10 +13,10 @@ import { getDaemonInfo, startDaemon, connectToDaemon } from './daemon/client.js'
 import { findMulitModuleProjects, detectSpring } from './resolution/frameworks/java.js'
 import { detectVue } from './resolution/frameworks/vue.js'
 
-const program = new Command()
+export const program = new Command()
 
 program
-  .name('mini-cg')
+  .name('mini-codegraph')
   .description('mini-codegraph — lightweight code knowledge graph')
   .version('0.2.0')
 
@@ -28,9 +28,12 @@ program
   .option('-y, --yes', 'Non-interactive, accept defaults')
   .option('--multi-module', 'Discover and initialize sub-modules (Maven/Gradle multi-module)')
   .option('-e, --exclude <patterns>', 'Comma-separated glob patterns to exclude (e.g. "generated-sources/**,**/test/**")')
-  .action(async (path: string, options: { index?: boolean; yes?: boolean; multiModule?: boolean; exclude?: string }) => {
+  .option('-w, --workspace <path>', 'Workspace root path for multi-project scanning and interface extraction')
+  .option('--fast', 'Skip content hash verification for faster indexing (uses mtime+size only)')
+  .action(async (path: string, options: { index?: boolean; yes?: boolean; multiModule?: boolean; exclude?: string; workspace?: string; fast?: boolean }) => {
     const resolvedPath = resolve(path)
     const excludePatterns = options.exclude?.split(',').map(s => s.trim()).filter(Boolean)
+    const fastMode = options.fast === true
 
     if (options.multiModule) {
       const { cg, modules } = MiniCodeGraph.initMultiModule(resolvedPath)
@@ -62,14 +65,24 @@ program
       return
     }
 
-    const cg = MiniCodeGraph.init(resolvedPath)
+    const workspaceRoot = options.workspace ? resolve(options.workspace) : undefined
+    const cg = MiniCodeGraph.init(resolvedPath, false, workspaceRoot)
     console.error(`Initialized mini-codegraph for ${resolvedPath}`)
+    if (workspaceRoot) {
+      console.error(`Workspace root: ${workspaceRoot}`)
+    }
 
     if (options.index) {
       console.error('Indexing...')
       const result = await cg.index(excludePatterns)
       const stats = cg.getGraph().getStats()
       console.error(`Indexed ${stats.files} files, ${stats.nodes} nodes, ${stats.edges} edges`)
+
+      if (workspaceRoot) {
+        console.error('Scanning workspace projects and extracting interfaces...')
+        const wsResult = await cg.initWorkspace(workspaceRoot)
+        console.error(`Workspace: ${wsResult.symbolsAdded} external symbols, ${wsResult.refsAdded} references`)
+      }
     }
 
     cg.close()
@@ -84,16 +97,21 @@ program
   .option('--multi-module', 'Index as multi-module (Maven/Gradle multi-module parent)')
   .option('-e, --exclude <patterns>', 'Comma-separated glob patterns to exclude (e.g. "generated-sources/**,**/test/**")')
   .option('-j, --json', 'Output structured JSON summary')
-  .action(async (path: string, options: { force?: boolean; changed?: boolean; multiModule?: boolean; exclude?: string; json?: boolean }) => {
+  .option('--progress', 'Show detailed indexing progress with file-by-file status')
+  .action(async (path: string, options: { force?: boolean; changed?: boolean; multiModule?: boolean; exclude?: string; json?: boolean; progress?: boolean }) => {
     const resolvedPath = resolve(path)
     const excludePatterns = options.exclude?.split(',').map(s => s.trim()).filter(Boolean)
 
     if (options.changed) {
-      const cg = MiniCodeGraph.open(resolvedPath)
-      if (!cg) {
-        console.error('No index found. Run full index first.')
+      if (!MiniCodeGraph.findProjectRoot(resolvedPath)) {
+        console.error(`Error: no .mini-codegraph/ database found in ${resolvedPath}. Run 'mini-codegraph init <path>' first.`)
         process.exit(1)
       }
+    const cg = MiniCodeGraph.open(resolvedPath)
+    if (!cg) {
+      console.error(`No index found at ${resolvedPath}. Run 'mini-codegraph init <path> --index' first.`)
+      process.exit(1)
+    }
       const result = await cg.sync()
       if (options.json) {
         console.log(JSON.stringify({
@@ -140,6 +158,12 @@ program
       }, null, 2))
       cg.close()
       return
+    }
+
+    if (!MiniCodeGraph.findProjectRoot(resolvedPath) && !['pom.xml', 'build.gradle', 'package.json', 'Cargo.toml', 'pyproject.toml', 'go.mod', 'CMakeLists.txt'].some(f => existsSync(join(resolvedPath, f)))) {
+      console.error(`Error: ${resolvedPath} does not appear to be a valid project root (no .mini-codegraph/ or known build file found).`)
+      console.error('Run `mini-codegraph init <path>` first, or specify the correct project root.')
+      process.exit(1)
     }
 
     const cg = MiniCodeGraph.init(resolvedPath)
@@ -252,15 +276,17 @@ program
   .description('Start the MCP server over stdio')
   .argument('[path]', 'Project root path', process.cwd())
   .option('--daemon', 'Run in daemon mode with file watching')
+  .option('--mcp', 'Run in MCP server mode (alias for --daemon)')
   .option('--shared', 'Run in shared daemon mode (multi-client over Unix socket)')
-  .action(async (path: string, options: { daemon?: boolean; shared?: boolean }) => {
+  .action(async (path: string, options: { daemon?: boolean; mcp?: boolean; shared?: boolean }) => {
+    options.daemon = options.daemon || options.mcp
     const resolvedPath = resolve(path)
 
     if (options.shared) {
       const { SharedDaemon } = await import('./daemon/shared.js')
       const cg = MiniCodeGraph.open(resolvedPath)
       if (!cg) {
-        console.error(`No index found for ${resolvedPath}. Run 'mini-cg init' and 'mini-cg index' first.`)
+        console.error(`No index found for ${resolvedPath}. Run 'mini-codegraph init' and 'mini-codegraph index' first.`)
         process.exit(1)
       }
 
@@ -282,7 +308,7 @@ program
     if (options.daemon) {
       const cg = MiniCodeGraph.open(resolvedPath)
       if (!cg) {
-        console.error(`No index found for ${resolvedPath}. Run 'mini-cg init' and 'mini-cg index' first.`)
+        console.error(`No index found for ${resolvedPath}. Run 'mini-codegraph init' and 'mini-codegraph index' first.`)
         process.exit(1)
       }
 
@@ -1308,7 +1334,7 @@ program
     if (cliPath) {
       console.error(`CLI available at: ${cliPath}`)
     } else {
-      console.error('Warning: mini-cg not found on PATH. Agents may not be able to launch the server.')
+      console.error('Warning: mini-codegraph not found on PATH. Agents may not be able to launch the server.')
       console.error('Add the dist/ directory to your PATH or run: npm link')
     }
 
@@ -1336,8 +1362,8 @@ program
           opencodeConfig.mcpServers = opencodeConfig.mcpServers || {}
           opencodeConfig.mcpServers['mini-codegraph'] = {
             type: 'stdio',
-            command: 'mini-cg',
-            args: ['serve', location === 'local' ? projectRoot : ''],
+        command: 'mini-codegraph',
+        args: ['serve', location === 'local' ? projectRoot : ''],
           }
 
           if (!existsSync(configDir)) {
@@ -1360,7 +1386,7 @@ program
           claudeConfig.mcpServers = claudeConfig.mcpServers || {}
           claudeConfig.mcpServers['mini-codegraph'] = {
             type: 'stdio',
-            command: 'mini-cg',
+            command: 'mini-codegraph',
             args: ['serve'],
           }
 
@@ -1380,7 +1406,7 @@ program
           cursorConfig.mcpServers = cursorConfig.mcpServers || {}
           cursorConfig.mcpServers['mini-codegraph'] = {
             type: 'stdio',
-            command: 'mini-cg',
+            command: 'mini-codegraph',
             args: ['serve'],
           }
           if (!existsSync(configDir)) mkdirSync(configDir, { recursive: true })
@@ -1398,7 +1424,7 @@ program
           codexConfig.mcpServers = codexConfig.mcpServers || {}
           codexConfig.mcpServers['mini-codegraph'] = {
             type: 'stdio',
-            command: 'mini-cg',
+            command: 'mini-codegraph',
             args: ['serve'],
           }
           configs.push({ agent: 'codex', configPath, config: codexConfig })
@@ -1414,7 +1440,7 @@ program
           geminiConfig.mcpServers = geminiConfig.mcpServers || {}
           geminiConfig.mcpServers['mini-codegraph'] = {
             type: 'stdio',
-            command: 'mini-cg',
+            command: 'mini-codegraph',
             args: ['serve'],
           }
           const configDir = join(homedir(), '.gemini')
@@ -1433,7 +1459,7 @@ program
           hermesConfig.mcpServers = hermesConfig.mcpServers || {}
           hermesConfig.mcpServers['mini-codegraph'] = {
             type: 'stdio',
-            command: 'mini-cg',
+            command: 'mini-codegraph',
             args: ['serve'],
           }
           if (!existsSync(configDir)) mkdirSync(configDir, { recursive: true })
@@ -1451,7 +1477,7 @@ program
           agConfig.mcpServers = agConfig.mcpServers || {}
           agConfig.mcpServers['mini-codegraph'] = {
             type: 'stdio',
-            command: 'mini-cg',
+            command: 'mini-codegraph',
             args: ['serve'],
           }
           if (!existsSync(configDir)) mkdirSync(configDir, { recursive: true })
@@ -1468,7 +1494,7 @@ program
           kiroConfig.mcpServers = kiroConfig.mcpServers || {}
           kiroConfig.mcpServers['mini-codegraph'] = {
             type: 'stdio',
-            command: 'mini-cg',
+            command: 'mini-codegraph',
             args: ['serve'],
           }
           const configDir = join(homedir(), '.kiro')
@@ -1489,8 +1515,8 @@ program
 
     if (configs.length > 0) {
       const projectRoot = process.cwd()
-      if (!existsSync(join(projectRoot, '.mini-codegraph', 'mini-cg.db'))) {
-        console.error('Note: project not initialized. Run "mini-cg init" and "mini-cg index" first.')
+      if (!existsSync(join(projectRoot, '.mini-codegraph', 'mini-codegraph.db'))) {
+        console.error('Note: project not initialized. Run "mini-codegraph init" and "mini-codegraph index" first.')
       }
       console.error('Done!')
     }
@@ -1505,18 +1531,18 @@ program
     const projectRoot = process.cwd()
     const cg = MiniCodeGraph.open(projectRoot)
     if (!cg) {
-      console.error('No mini-codegraph database found. Run "mini-cg init" first.')
+      console.error('No mini-codegraph database found. Run "mini-codegraph init" first.')
       process.exit(1)
     }
 
     switch (action) {
       case 'add':
-        if (!pattern) { console.error('Usage: mini-cg exclude add <pattern>'); process.exit(1) }
+        if (!pattern) { console.error('Usage: mini-codegraph exclude add <pattern>'); process.exit(1) }
         cg.addExclude(pattern)
         console.error(`Added exclude pattern: ${pattern}`)
         break
       case 'remove':
-        if (!pattern) { console.error('Usage: mini-cg exclude remove <pattern>'); process.exit(1) }
+        if (!pattern) { console.error('Usage: mini-codegraph exclude remove <pattern>'); process.exit(1) }
         cg.removeExclude(pattern)
         console.error(`Removed exclude pattern: ${pattern}`)
         break
@@ -1539,8 +1565,8 @@ program
 
 function ensureCliOnPath(): string | null {
   try {
-    execFileSync('mini-cg', ['--version'], { stdio: 'pipe' })
-    return 'mini-cg'
+    execFileSync('mini-codegraph', ['--version'], { stdio: 'pipe' })
+    return 'mini-codegraph'
   } catch { /* silent */ }
 
   const distCli = join(process.cwd(), 'dist', 'cli.js')

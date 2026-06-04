@@ -103,10 +103,10 @@ describe('MCPServer', () => {
       expect(response.result.tools.length).toBeGreaterThan(10)
 
       const toolNames = response.result.tools.map((t: any) => t.name)
-      expect(toolNames).toContain('mini_codegraph_search')
-      expect(toolNames).toContain('mini_codegraph_context')
-      expect(toolNames).toContain('mini_codegraph_status')
-      expect(toolNames).toContain('mini_codegraph_files')
+      expect(toolNames).toContain('mini_cg_search')
+      expect(toolNames).toContain('mini_cg_context')
+      expect(toolNames).toContain('mini_cg_status')
+      expect(toolNames).toContain('mini_cg_files')
     })
   })
 
@@ -116,7 +116,7 @@ describe('MCPServer', () => {
         jsonrpc: '2.0',
         id: 3,
         method: 'tools/call',
-        params: { name: 'mini_codegraph_status', arguments: {} },
+        params: { name: 'mini_cg_status', arguments: {} },
       })
 
       expect(mockTransport.sent.length).toBe(1)
@@ -159,7 +159,7 @@ describe('MCPServer', () => {
         jsonrpc: '2.0',
         id: null as any,
         method: 'tools/call',
-        params: { name: 'mini_codegraph_status', arguments: {} },
+        params: { name: 'mini_cg_status', arguments: {} },
       })
 
       expect(mockTransport.sent.length).toBe(1)
@@ -205,7 +205,7 @@ describe('MCPServer', () => {
         jsonrpc: '2.0',
         id: 8,
         method: 'tools/call',
-        params: { name: 'mini_codegraph_status', arguments: {} },
+        params: { name: 'mini_cg_status', arguments: {} },
       })
 
       const response = mockTransport.sent[0]

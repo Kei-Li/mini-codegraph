@@ -83,6 +83,13 @@ export function extractConfigProperties(projectRoot: string): { key: string; val
   return result
 }
 
+const SENSITIVE_KEYS = /password|secret|token|key|credential|certificate|private_key|api_key|access_key/i
+
+function maskSensitiveValue(key: string, value: string): string {
+  if (SENSITIVE_KEYS.test(key)) return '***'
+  return value
+}
+
 export function indexConfigProperties(
   queries: QueryManager,
   projectRoot: string,
@@ -112,7 +119,7 @@ export function indexConfigProperties(
       filePath: node.filePath,
       properties: nodeProps.map(p => ({
         key: p.key,
-        value: p.value,
+        value: maskSensitiveValue(p.key, p.value),
         sourceFile: p.sourceFile,
         sourceLine: p.sourceLine,
       })),
@@ -122,7 +129,7 @@ export function indexConfigProperties(
     const bindingId = `config:${moduleId}:${prefix}`
     for (const np of nodeProps) {
       queries.insertEdge(bindingId, node.id, 'config_binding',
-        JSON.stringify({ prefix, key: np.key, value: np.value }),
+        JSON.stringify({ prefix, key: np.key, value: maskSensitiveValue(np.key, np.value) }),
         0, 0)
     }
 

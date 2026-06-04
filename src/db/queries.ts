@@ -50,6 +50,8 @@ function mapRowToModule(row: Record<string, any>): ModuleInfo {
 export class QueryManager {
   constructor(private db: DatabaseConnection) {}
 
+  getDb(): DatabaseConnection { return this.db }
+
   private batchMode = false
   private pendingNodes: MiniCodeGraphNode[] = []
   private pendingEdges: { source: string; target: string; kind: string; metadata: string; line: number; col: number }[] = []
@@ -383,6 +385,88 @@ export class QueryManager {
     const stmt = this.db.prepare(sql)
     const rows = limit ? stmt.all(prefix, limit) : stmt.all(prefix)
     return (rows as Record<string, any>[]).map(mapRowToNode)
+  }
+
+  insertExternalSymbol(id: string, name: string, kind: string, providingService: string, definitionFile: string, signature: string, metadata: string): void {
+    const stmt = this.db.prepare(Q.INSERT_EXTERNAL_SYMBOL)
+    stmt.run(id, name, kind, providingService, definitionFile, signature, metadata)
+  }
+
+  insertExternalReference(sourceLocation: string, externalSymbolId: string, referenceType: string, targetService: string, metadata: string): void {
+    const stmt = this.db.prepare(Q.INSERT_EXTERNAL_REFERENCE)
+    stmt.run(sourceLocation, externalSymbolId, referenceType, targetService, metadata)
+  }
+
+  getExternalSymbolsByService(serviceName: string): { id: string; name: string; kind: string; providingService: string; signature: string }[] {
+    const stmt = this.db.prepare(Q.GET_EXTERNAL_SYMBOLS_BY_SERVICE)
+    const rows = stmt.all(serviceName) as Record<string, any>[]
+    return rows.map(r => ({
+      id: r.id, name: r.name, kind: r.kind,
+      providingService: r.providing_service,
+      signature: r.signature ?? '',
+    }))
+  }
+
+  getExternalReferencesBySymbol(symbolId: string): { id: number; sourceLocation: string; referenceType: string; targetService: string }[] {
+    const stmt = this.db.prepare(Q.GET_EXTERNAL_REFS_BY_SYMBOL)
+    const rows = stmt.all(symbolId) as Record<string, any>[]
+    return rows.map(r => ({
+      id: r.id, sourceLocation: r.source_location,
+      referenceType: r.reference_type, targetService: r.target_service,
+    }))
+  }
+
+  getAllExternalSymbols(): { id: string; name: string; kind: string; serviceName?: string; signature?: string }[] {
+    const stmt = this.db.prepare(Q.GET_ALL_EXTERNAL_SYMBOLS)
+    const rows = stmt.all() as Record<string, any>[]
+    return rows.map(r => ({
+      id: r.id, name: r.name, kind: r.kind,
+      serviceName: r.providing_service,
+      signature: r.signature ?? '',
+    }))
+  }
+
+  getAllExternalReferences(): { id: string; sourceLocation: string; symbolName: string; serviceName?: string; detail?: string; sourceSymbol: string }[] {
+    const stmt = this.db.prepare(Q.GET_ALL_EXTERNAL_REFERENCES)
+    const rows = stmt.all() as Record<string, any>[]
+    return rows.map(r => ({
+      id: r.id,
+      sourceLocation: r.source_location,
+      symbolName: r.external_symbol_id,
+      sourceSymbol: r.external_symbol_id,
+      serviceName: r.target_service,
+    }))
+  }
+
+  getExternalReferencesByTarget(symbolName: string): { id: string; symbolName: string; serviceName?: string; detail?: string }[] {
+    const stmt = this.db.prepare(Q.GET_EXTERNAL_REFS_BY_SYMBOL_NAME)
+    const rows = stmt.all(symbolName) as Record<string, any>[]
+    return rows.map(r => ({
+      id: r.id,
+      symbolName: r.symbol_name,
+      serviceName: r.service_name,
+      detail: r.source_location,
+    }))
+  }
+
+  getExternalReferencesBySource(sourceName: string): { id: string; symbolName: string; serviceName?: string; detail?: string; sourceSymbol: string }[] {
+    const stmt = this.db.prepare(Q.GET_EXTERNAL_REFS_BY_SOURCE_NAME)
+    const rows = stmt.all(`%${sourceName}%`) as Record<string, any>[]
+    return rows.map(r => ({
+      id: r.id,
+      symbolName: r.symbol_name,
+      serviceName: r.service_name,
+      detail: r.source_location,
+      sourceSymbol: r.symbol_name,
+    }))
+  }
+
+  deleteExternalSymbolsByService(serviceName: string): void {
+    this.db.prepare(Q.DELETE_EXTERNAL_SYMBOLS_BY_SERVICE).run(serviceName)
+  }
+
+  deleteExternalReferencesByService(serviceName: string): void {
+    this.db.prepare(Q.DELETE_EXTERNAL_REFS_BY_SERVICE).run(serviceName, serviceName)
   }
 
   upsertTemplate(filePath: string, language: string, data: {

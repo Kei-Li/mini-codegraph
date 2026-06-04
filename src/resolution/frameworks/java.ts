@@ -297,6 +297,7 @@ export function isSpringProject(projectRoot: string): boolean {
 export function findMulitModuleProjects(parentDir: string): string[] {
   const modules: string[] = []
 
+  // 1. Maven multi-module: parse <module> tags from parent pom.xml
   const pomPath = join(parentDir, 'pom.xml')
   if (existsSync(pomPath)) {
     try {
@@ -304,11 +305,15 @@ export function findMulitModuleProjects(parentDir: string): string[] {
       const moduleRegex = /<module>([^<]+)<\/module>/g
       let m: RegExpExecArray | null
       while ((m = moduleRegex.exec(content)) !== null) {
-        modules.push(join(parentDir, m[1].trim()))
+        const childPath = join(parentDir, m[1].trim())
+        if (existsSync(childPath)) modules.push(childPath)
       }
     } catch { /* silent */ }
+    // Maven project → only explicit <module> children, no fallback scan
+    return modules
   }
 
+  // 2. Gradle multi-module: parse include statements from settings.gradle
   const settingsGradle = join(parentDir, 'settings.gradle')
   if (existsSync(settingsGradle)) {
     try {
@@ -316,21 +321,12 @@ export function findMulitModuleProjects(parentDir: string): string[] {
       const includeRegex = /include\s+['"]([^'"]+)['"]/g
       let m: RegExpExecArray | null
       while ((m = includeRegex.exec(content)) !== null) {
-        modules.push(join(parentDir, m[1].trim().replace(':', '/')))
+        const childPath = join(parentDir, m[1].trim().replace(':', '/'))
+        if (existsSync(childPath)) modules.push(childPath)
       }
     } catch { /* silent */ }
+    return modules
   }
 
-  const entries = readdirSync(parentDir, { withFileTypes: true })
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue
-    if (entry.name.startsWith('.') || entry.name === 'node_modules') continue
-    const subPath = join(parentDir, entry.name)
-    if (existsSync(join(subPath, 'pom.xml')) || existsSync(join(subPath, 'build.gradle')) ||
-        existsSync(join(subPath, 'package.json')) && !modules.includes(subPath)) {
-      modules.push(subPath)
-    }
-  }
-
-  return [...new Set(modules)]
+  return modules
 }

@@ -3,6 +3,7 @@ import type { GraphQueryManager } from '../graph/queries.js'
 import { createTools, type ToolDefinition } from './tools.js'
 
 const MAX_OUTPUT_LENGTH = 15_000
+const CACHE_SIZE = 500
 
 function truncateOutput(text: string): string {
   if (text.length <= MAX_OUTPUT_LENGTH) return text
@@ -33,6 +34,8 @@ export class MCPServer {
   private tools: ToolDefinition[] = []
   private initialized = false
   private getPendingFiles: () => { path: string; firstSeenMs: number; lastSeenMs: number; indexing: boolean }[]
+  private cache = new Map<string, { result: any; ts: number }>()
+  private cacheKeys: string[] = []
 
   constructor(
     transport: Transport,
@@ -43,6 +46,24 @@ export class MCPServer {
     this.graph = graph
     this.getPendingFiles = getPendingFiles ?? (() => [])
     this.tools = createTools(graph, getPendingFiles)
+  }
+
+  private cacheGet(key: string): any | undefined {
+    const entry = this.cache.get(key)
+    if (entry && Date.now() - entry.ts < 60_000) return entry.result
+    this.cache.delete(key)
+    const idx = this.cacheKeys.indexOf(key)
+    if (idx >= 0) this.cacheKeys.splice(idx, 1)
+    return undefined
+  }
+
+  private cacheSet(key: string, result: any): void {
+    if (this.cacheKeys.length >= CACHE_SIZE) {
+      const oldest = this.cacheKeys.shift()
+      if (oldest) this.cache.delete(oldest)
+    }
+    if (!this.cache.has(key)) this.cacheKeys.push(key)
+    this.cache.set(key, { result, ts: Date.now() })
   }
 
   start(): void {
@@ -75,25 +96,26 @@ export class MCPServer {
               version: '0.1.0',
             },
             instructions: [
-              'mini-codegraph provides code intelligence through a knowledge graph built from AST parsing. It pre-indexes your codebase — a search/grep/read loop repeats work it already did.',
+              'mini-codegraph provides code intelligence through a knowledge graph built from AST parsing.',
               '',
               'Tool selection by intent:',
-              '- mini_codegraph_context: map an area, understand a task, build comprehensive context (includes callers, callees, implementations, cross-service calls)',
-              '- mini_codegraph_trace: "how does X reach Y?" — finds call paths between two symbols with dynamic-dispatch hops (interface→impl, callbacks, React re-render)',
-              '- mini_codegraph_explore: survey several related symbols grouped by file, plus a relationship map',
-              '- mini_codegraph_search: find symbols by name across the codebase',
-              '- mini_codegraph_callers / mini_codegraph_callees: walk call flow one direction at a time',
-              '- mini_codegraph_impact: check blast radius before editing (callers + transitive dependents)',
-              '- mini_codegraph_node: get details about a single symbol (optionally with source code)',
-              '- mini_codegraph_files: list indexed file structure (faster than filesystem ls)',
-              '- mini_codegraph_status: check index health and statistics',
+              '- mini_cg_context: map an area, understand a task, build comprehensive context',
+              '- mini_cg_trace: "how does X reach Y?" — finds call paths between two symbols',
+              '- mini_cg_explore: survey related symbols grouped by file, plus a relationship map',
+              '- mini_cg_search: find symbols by name across the codebase',
+              '- mini_cg_callers / mini_cg_callees: walk call flow one direction at a time',
+              '- mini_cg_impact: check blast radius before editing',
+              '- mini_cg_node: get details about a single symbol',
+              '- mini_cg_files: list indexed file structure',
+              '- mini_cg_status: check index health and statistics',
+              '- mini_cg_workspace_status: view all workspace projects',
               '',
               'Usage rules:',
-              '- Answer structural questions directly with these tools — do NOT fall back to grep/read exploration for things the graph already knows.',
+              '- Answer structural questions with these tools — do NOT fall back to grep/read.',
               '- Treat returned source as already read; do not re-read files the graph returned.',
-              '- For exploration questions ("how does X work?", "explain Y system"), delegate to an Explore sub-agent rather than calling mini_codegraph_context or mini_codegraph_explore directly in the main session.',
-              '- For targeted lookups before editing, use lightweight tools directly in the main session: mini_codegraph_search, mini_codegraph_callers/callees, mini_codegraph_impact, mini_codegraph_node.',
-              '- Results are from tree-sitter AST parsing — they are accurate for well-formed code.',
+              '- For exploration ("how does X work?"), use mini_cg_explore or mini_cg_context.',
+              '- For targeted lookups before editing: mini_cg_search, mini_cg_callers/callees, mini_cg_impact.',
+              '- Results are from tree-sitter AST parsing — accurate for well-formed code.',
             ].join('\n'),
           })
           break
@@ -119,16 +141,23 @@ export class MCPServer {
           }
 
           try {
+            const cacheKey = `${toolName}:${JSON.stringify(toolArgs)}`
+            const cached = this.cacheGet(cacheKey)
+            if (cached) {
+              this.sendResponse(id, { content: [{ type: 'text', text: truncateOutput(cached) }] })
+              break
+            }
             const result = await tool.handler(toolArgs, this.graph)
             const pending = this.getPendingFiles()
             if (pending.length > 0) {
               result._staleness = {
                 pendingFiles: pending.length,
-                warning: `${pending.length} file(s) pending sync. Results may be stale. Run 'mini-cg sync' to update.`,
+                    warning: `${pending.length} file(s) pending sync. Results may be stale. Run 'mini-codegraph sync' to update.`,
                 sample: pending.slice(0, 5).map(f => f.path),
               }
             }
             const textContent = typeof result === 'string' ? result : JSON.stringify(result, null, 2)
+            this.cacheSet(cacheKey, textContent)
             this.sendResponse(id, {
               content: [{ type: 'text', text: truncateOutput(textContent) }],
             })

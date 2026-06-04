@@ -232,3 +232,32 @@ export interface CacheTopology {
   redisConfig?: { host: string; port: number; database: number; cluster: boolean }
   relatedServices: string[]
 }
+
+export interface ExternalSymbol {
+  id: string
+  name: string
+  kind: string
+  providingService: string
+  definitionFile: string
+  signature: string
+  metadata: string
+}
+
+export interface ExternalReference {
+  id: number
+  sourceLocation: string
+  externalSymbolId: string
+  referenceType: string
+  targetService: string
+  metadata: string
+}
+
+export interface WorkspaceProject {
+  name: string
+  rootPath: string
+  language: string
+  buildSystem: string
+  detectedAt: number
+  provides: ExternalSymbol[]
+  consumes: { symbolId: string; referenceType: string; sourceLocation: string }[]
+}

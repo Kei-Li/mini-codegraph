@@ -32,7 +32,7 @@ function createTempDir(): string {
 function createTempProject(root: string): void {
   const dbDir = join(root, '.mini-codegraph')
   mkdirSync(dbDir, { recursive: true })
-  writeFileSync(join(dbDir, 'mini-cg.db'), '')
+  writeFileSync(join(dbDir, 'mini-codegraph.db'), '')
 }
 
 describe('MiniCodeGraph', () => {
@@ -51,7 +51,7 @@ describe('MiniCodeGraph', () => {
       const cg = MiniCodeGraph.init(tmpDir)
       expect(cg).toBeInstanceOf(MiniCodeGraph)
       expect(cg.getProjectRoot()).toBe(tmpDir)
-      expect(existsSync(join(tmpDir, '.mini-codegraph', 'config.json'))).toBe(true)
+      expect(existsSync(join(tmpDir, '.mini-codegraph', 'workspace.yml'))).toBe(true)
       cg.close()
     })
 
@@ -92,7 +92,7 @@ describe('MiniCodeGraph', () => {
       cg.addExclude('**/test/**')
       expect(cg.listExcludes()).toContain('**/test/**')
 
-      const config = JSON.parse(readFileSync(join(tmpDir, '.mini-codegraph', 'config.json'), 'utf-8'))
+      const config = JSON.parse(readFileSync(join(tmpDir, '.mini-codegraph', 'workspace.yml'), 'utf-8'))
       expect(config.exclude).toContain('**/test/**')
       cg.close()
     })
@@ -157,8 +157,9 @@ describe('MiniCodeGraph', () => {
       cg.close()
     })
 
-    it('detects Maven modules', () => {
+    it('detects Maven modules declared in parent pom.xml', () => {
       mkdirSync(join(tmpDir, 'module-a'), { recursive: true })
+      writeFileSync(join(tmpDir, 'pom.xml'), '<project><modules><module>module-a</module></modules></project>')
       writeFileSync(join(tmpDir, 'module-a', 'pom.xml'), '<project><artifactId>module-a</artifactId></project>')
 
       const { cg, modules } = MiniCodeGraph.initMultiModule(tmpDir)
@@ -170,14 +171,17 @@ describe('MiniCodeGraph', () => {
       cg.close()
     })
 
-    it('detects npm modules', () => {
+    it('detects Gradle modules declared in settings.gradle', () => {
       mkdirSync(join(tmpDir, 'web-app'), { recursive: true })
+      writeFileSync(join(tmpDir, 'settings.gradle'), 'include "web-app"')
+      writeFileSync(join(tmpDir, 'web-app', 'build.gradle'), '')
       writeFileSync(join(tmpDir, 'web-app', 'package.json'), JSON.stringify({ dependencies: { vue: '^3.0.0' } }))
 
       const { cg, modules } = MiniCodeGraph.initMultiModule(tmpDir)
       const mod = modules.find(m => m.name === 'web-app')
       expect(mod).toBeDefined()
-      expect(mod!.buildSystem).toBe('npm')
+      expect(mod!.buildSystem).toBe('gradle')
+      expect(mod!.language).toBe('vue')
       cg.close()
     })
   })

@@ -44,6 +44,88 @@ export class GraphQueryManager {
     return this.queries.getCallees(nodeId)
   }
 
+  getCallersWithExternal(nodeId: string): { node: MiniCodeGraphNode; provenance: string }[] {
+    const internal = this.queries.getCallers(nodeId).map(n => ({ node: n, provenance: 'internal' as const }))
+    const external = this.queries.getExternalReferencesByTarget(nodeId)
+      .map(ref => ({
+      node: {
+        id: ref.id,
+        kind: 'external_reference',
+        name: ref.symbolName,
+        qualifiedName: ref.serviceName ? `${ref.serviceName}.${ref.symbolName}` : ref.symbolName,
+        filePath: `external://${ref.serviceName ?? 'unknown'}`,
+        startLine: 0,
+        endLine: 0,
+        startColumn: 0,
+        endColumn: 0,
+        language: '',
+        docstring: ref.detail ?? '',
+        signature: ref.detail ?? '',
+        visibility: 'public',
+        isExported: true,
+        parentId: null,
+      },
+      provenance: `external:${ref.serviceName ?? 'unknown'}`,
+    }))
+    const node = this.queries.getNode(nodeId)
+    if (node) {
+      const externalCallersFromOtherServices = this.queries.getExternalReferencesBySource(node.name)
+        .filter(ref => ref.serviceName && ref.serviceName !== this.projectRoot)
+        .map(ref => ({
+          node: {
+            id: ref.id,
+            kind: 'external_reference',
+            name: ref.symbolName,
+            qualifiedName: `${ref.serviceName ?? 'unknown'}.${ref.symbolName}`,
+            filePath: `external://${ref.serviceName ?? 'unknown'}`,
+            startLine: 0,
+            endLine: 0,
+            startColumn: 0,
+            endColumn: 0,
+            language: '',
+            docstring: ref.detail ?? '',
+            signature: ref.detail ?? '',
+            visibility: 'public',
+            isExported: true,
+            parentId: null,
+          },
+          provenance: `external_from:${ref.serviceName ?? 'unknown'}`,
+        }))
+      return [...internal, ...external, ...externalCallersFromOtherServices]
+    }
+    return [...internal, ...external]
+  }
+
+  getCalleesWithExternal(nodeId: string): { node: MiniCodeGraphNode; provenance: string }[] {
+    const internal = this.queries.getCallees(nodeId).map(n => ({ node: n, provenance: 'internal' as const }))
+    const node = this.queries.getNode(nodeId)
+    if (node) {
+      const external = this.queries.getExternalReferencesBySource(node.name)
+        .map(ref => ({
+          node: {
+            id: ref.id,
+            kind: 'external_reference',
+            name: ref.symbolName,
+            qualifiedName: ref.symbolName,
+            filePath: `external://${ref.serviceName ?? 'unknown'}`,
+            startLine: 0,
+            endLine: 0,
+            startColumn: 0,
+            endColumn: 0,
+            language: '',
+            docstring: ref.detail ?? '',
+            signature: ref.detail ?? '',
+            visibility: 'public',
+            isExported: true,
+            parentId: null,
+          },
+          provenance: `external:${ref.serviceName ?? 'unknown'}`,
+        }))
+      return [...internal, ...external]
+    }
+    return internal
+  }
+
   getContext(nodeId: string): {
     node: MiniCodeGraphNode | undefined
     parent: MiniCodeGraphNode | undefined
@@ -246,7 +328,7 @@ export class GraphQueryManager {
 
   checkStaleFiles(): void {
     if (this.pendingFiles.size > 0) {
-      console.error(`Warning: ${this.pendingFiles.size} files pending sync. Run 'mini-cg sync' to catch up.`)
+      console.error(`Warning: ${this.pendingFiles.size} files pending sync. Run 'mini-codegraph sync' to catch up.`)
     }
   }
 

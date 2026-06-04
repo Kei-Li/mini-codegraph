@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import type { GraphQueryManager } from '../graph/queries.js'
 import type { JSONRPCRequest, JSONRPCResponse } from './server.js'
+import { createWorkspaceStatusHandler } from './handlers/workspace-status.js'
 
 export interface ToolDefinition {
   name: string
@@ -31,7 +32,7 @@ export function createTools(
 ): ToolDefinition[] {
   return [
     {
-      name: 'mini_codegraph_search',
+      name: 'mini_cg_search',
       description: `Search for symbols by name across the codebase. Returns matching nodes with their locations and snippets.`,
       inputSchema: {
         type: 'object',
@@ -67,7 +68,7 @@ export function createTools(
       },
     },
     {
-      name: 'mini_codegraph_context',
+      name: 'mini_cg_context',
       description: 'Build comprehensive context for a task — searches for relevant symbols, retrieves their definitions and relationships. Returns code snippets, callers, callees, and file locations.',
       inputSchema: {
         type: 'object',
@@ -137,7 +138,7 @@ export function createTools(
       },
     },
     {
-      name: 'mini_codegraph_trace',
+      name: 'mini_cg_trace',
       description: 'Find the call path between two symbols — how does <from> reach <to>?',
       inputSchema: {
         type: 'object',
@@ -215,7 +216,7 @@ export function createTools(
       },
     },
     {
-      name: 'mini_codegraph_callers',
+      name: 'mini_cg_callers',
       description: 'Find all functions/methods that call a specific symbol. Supports pagination via offset for large result sets.',
       inputSchema: {
         type: 'object',
@@ -245,7 +246,7 @@ export function createTools(
       },
     },
     {
-      name: 'mini_codegraph_callees',
+      name: 'mini_cg_callees',
       description: 'Find all functions/methods that a specific symbol calls. Supports pagination via offset for large result sets.',
       inputSchema: {
         type: 'object',
@@ -275,7 +276,7 @@ export function createTools(
       },
     },
     {
-      name: 'mini_codegraph_node',
+      name: 'mini_cg_node',
       description: 'Get detailed information about a specific symbol, including its source code.',
       inputSchema: {
         type: 'object',
@@ -303,7 +304,7 @@ export function createTools(
       },
     },
     {
-      name: 'mini_codegraph_impact',
+      name: 'mini_cg_impact',
       description: 'Analyze what code is affected by changing a symbol. Returns callers and transitive dependencies.',
       inputSchema: {
         type: 'object',
@@ -336,7 +337,7 @@ export function createTools(
       },
     },
     {
-      name: 'mini_codegraph_files',
+      name: 'mini_cg_files',
       description: 'List indexed files, optionally filtered by glob pattern.',
       inputSchema: {
         type: 'object',
@@ -358,7 +359,7 @@ export function createTools(
       },
     },
     {
-      name: 'mini_codegraph_status',
+      name: 'mini_cg_status',
       description: 'Show index health and statistics: number of files, nodes, and edges.',
       inputSchema: {
         type: 'object',
@@ -369,7 +370,7 @@ export function createTools(
       },
     },
     {
-      name: 'mini_codegraph_explore',
+      name: 'mini_cg_explore',
       description: 'Return source for several related symbols grouped by file, plus a relationship map, in one call.',
       inputSchema: {
         type: 'object',
@@ -435,7 +436,7 @@ export function createTools(
       },
     },
     {
-      name: 'mini_codegraph_architecture',
+      name: 'mini_cg_architecture',
       description: 'Show the microservice architecture: modules, their dependencies (FeignClient calls), and entry points (REST endpoints).',
       inputSchema: {
         type: 'object',
@@ -457,7 +458,7 @@ export function createTools(
       },
     },
     {
-      name: 'mini_codegraph_feign',
+      name: 'mini_cg_feign',
       description: 'List all FeignClient interfaces and their microservice targets.',
       inputSchema: {
         type: 'object',
@@ -482,7 +483,7 @@ export function createTools(
       },
     },
     {
-      name: 'mini_codegraph_mybatis',
+      name: 'mini_cg_mybatis',
       description: 'List MyBatis mapper XML bindings — maps Java interface methods to SQL statements.',
       inputSchema: {
         type: 'object',
@@ -503,7 +504,7 @@ export function createTools(
       },
     },
     {
-      name: 'mini_codegraph_modules',
+      name: 'mini_cg_modules',
       description: 'List all indexed modules (microservices) in the project.',
       inputSchema: {
         type: 'object',
@@ -515,7 +516,7 @@ export function createTools(
       },
     },
     {
-      name: 'mini_codegraph_react',
+      name: 'mini_cg_react',
       description: 'List React components, hooks, stores (Redux/Zustand), and data queries (React Query).',
       inputSchema: {
         type: 'object',
@@ -539,7 +540,7 @@ export function createTools(
       },
     },
     {
-      name: 'mini_codegraph_mongo',
+      name: 'mini_cg_mongo',
       description: 'List MongoDB entities — @Document collections, repositories, and MongoTemplate usage.',
       inputSchema: {
         type: 'object',
@@ -554,7 +555,7 @@ export function createTools(
       },
     },
     {
-      name: 'mini_codegraph_redis',
+      name: 'mini_cg_redis',
       description: 'List Redis @RedisHash entities, repositories, and RedisTemplate/Redisson operations.',
       inputSchema: {
         type: 'object',
@@ -574,7 +575,7 @@ export function createTools(
       },
     },
     {
-      name: 'mini_codegraph_sql',
+      name: 'mini_cg_sql',
       description: 'List SQL tables and statements — DDL from SQL files, MyBatis @Select/@Insert/@Update/@Delete, JPA @Query, JDBC strings.',
       inputSchema: {
         type: 'object',
@@ -593,6 +594,7 @@ export function createTools(
         }
       },
     },
+    createWorkspaceStatusHandler(),
   ]
 }
 

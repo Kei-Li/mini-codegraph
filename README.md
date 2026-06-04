@@ -47,11 +47,11 @@ npm run build
 npm link
 
 # Initialize and index a project
-mini-cg init /path/to/project --index
+mini-codegraph init /path/to/project --index
 
 # Or step by step
-mini-cg init /path/to/project
-mini-cg index /path/to/project
+mini-codegraph init /path/to/project
+mini-codegraph index /path/to/project
 ```
 
 ## CLI Commands (60+)
@@ -59,99 +59,99 @@ mini-cg index /path/to/project
 ### Setup
 | Command | Description |
 |---|---|
-| `mini-cg init [path]` | Initialize database |
-| `mini-cg index [path]` | Index all supported files |
-| `mini-cg sync [path]` | Incremental — index only changed files |
-| `mini-cg serve [path]` | Start MCP server (stdio, daemon, or shared) |
-| `mini-cg install` | Configure for AI agents |
+| `mini-codegraph init [path]` | Initialize database |
+| `mini-codegraph index [path]` | Index all supported files |
+| `mini-codegraph sync [path]` | Incremental — index only changed files |
+| `mini-codegraph serve [path]` | Start MCP server (stdio, daemon, or shared) |
+| `mini-codegraph install` | Configure for AI agents |
 
 ### Core Queries
 | Command | Description |
 |---|---|
-| `mini-cg search <query>` | Search symbols (FTS5 + fuzzy fallback) |
-| `mini-cg status` | Index statistics and detected frameworks |
-| `mini-cg files` | List indexed files |
-| `mini-cg modules` | List indexed modules |
-| `mini-cg context <task>` | Build comprehensive context for a task |
-| `mini-cg callers <symbol>` | Find callers of a symbol |
-| `mini-cg callees <symbol>` | Find callees of a symbol |
-| `mini-cg impact <symbol>` | Blast radius analysis |
-| `mini-cg explore <symbols>` | Explore related symbols grouped by file |
-| `mini-cg trace <from> <to>` | Show call path between two symbols |
-| `mini-cg dead-code` | Find symbols with no callers |
-| `mini-cg affected <files...>` | Find test files affected by source changes |
+| `mini-codegraph search <query>` | Search symbols (FTS5 + fuzzy fallback) |
+| `mini-codegraph status` | Index statistics and detected frameworks |
+| `mini-codegraph files` | List indexed files |
+| `mini-codegraph modules` | List indexed modules |
+| `mini-codegraph context <task>` | Build comprehensive context for a task |
+| `mini-codegraph callers <symbol>` | Find callers of a symbol |
+| `mini-codegraph callees <symbol>` | Find callees of a symbol |
+| `mini-codegraph impact <symbol>` | Blast radius analysis |
+| `mini-codegraph explore <symbols>` | Explore related symbols grouped by file |
+| `mini-codegraph trace <from> <to>` | Show call path between two symbols |
+| `mini-codegraph dead-code` | Find symbols with no callers |
+| `mini-codegraph affected <files...>` | Find test files affected by source changes |
 
 ### Frontend & Database Analysis
 | Command | Description |
 |---|---|
-| `mini-cg react` | React components, hooks, Redux/Zustand stores, React Query |
-| `mini-cg mongo` | MongoDB @Document entities, repositories, MongoTemplate |
-| `mini-cg redis` | Redis @RedisHash, RedisTemplate/Redisson operations |
-| `mini-cg sql` | SQL tables (DDL), MyBatis/JPA/JDBC SQL statements |
+| `mini-codegraph react` | React components, hooks, Redux/Zustand stores, React Query |
+| `mini-codegraph mongo` | MongoDB @Document entities, repositories, MongoTemplate |
+| `mini-codegraph redis` | Redis @RedisHash, RedisTemplate/Redisson operations |
+| `mini-codegraph sql` | SQL tables (DDL), MyBatis/JPA/JDBC SQL statements |
 
 ### Java/Spring Domain Analysis
 | Command | Description |
 |---|---|
-| `mini-cg routes` | Detect web framework routes |
-| `mini-cg feign` | FeignClient cross-service call mappings |
-| `mini-cg mybatis` | MyBatis mapper XML bindings |
-| `mini-cg gateway` | API Gateway routes |
-| `mini-cg mq` | Message queue bindings |
-| `mini-cg api-map` | Vue frontend to API controller mappings |
-| `mini-cg security` | Security annotations |
-| `mini-cg jpa` | JPA entities |
-| `mini-cg batch` | Spring Batch jobs |
-| `mini-cg resilience` | Resilience policies |
-| `mini-cg pinia` | Pinia stores |
-| `mini-cg i18n` | i18n message usage |
-| `mini-cg docker` | Docker deployment containers |
-| `mini-cg k8s` | K8s resources |
-| `mini-cg openapi` | OpenAPI contracts |
-| `mini-cg diagram` | Mermaid architecture diagrams |
-| `mini-cg config` | `@ConfigurationProperties` bindings |
-| `mini-cg tx` | `@Transactional` annotations and propagation |
-| `mini-cg cache` | Cache annotations and cache topology |
-| `mini-cg lombok` | Lombok-synthesized methods |
-| `mini-cg grpc` | gRPC services |
-| `mini-cg mapstruct` | MapStruct mappers |
-| `mini-cg autoconfig` | `@ConditionalOn*` auto-configuration |
-| `mini-cg maven` | Maven module dependency graph |
-| `mini-cg gradle` | Gradle module dependency graph |
-| `mini-cg cloud-config` | `@RefreshScope` and Cloud Config |
-| `mini-cg loadbalancer` | `@LoadBalanced` clients |
-| `mini-cg graphql` | GraphQL endpoints |
-| `mini-cg websocket` | WebSocket endpoints |
-| `mini-cg test` | Test annotations |
-| `mini-cg async` | `@Async` and `@Scheduled` methods |
-| `mini-cg aop` | AOP aspects |
-| `mini-cg security-filter` | SecurityFilterChain rules |
-| `mini-cg k8s-net` | K8s Ingress/Service/NetworkPolicy |
-| `mini-cg advice` | `@ControllerAdvice` handlers |
-| `mini-cg interceptor` | HandlerInterceptor chain |
-| `mini-cg stream-func` | Spring Cloud Stream functions |
-| `mini-cg jpa-query` | JPA `@Query` annotations |
-| `mini-cg profile` | `@Profile` annotations |
+| `mini-codegraph routes` | Detect web framework routes |
+| `mini-codegraph feign` | FeignClient cross-service call mappings |
+| `mini-codegraph mybatis` | MyBatis mapper XML bindings |
+| `mini-codegraph gateway` | API Gateway routes |
+| `mini-codegraph mq` | Message queue bindings |
+| `mini-codegraph api-map` | Vue frontend to API controller mappings |
+| `mini-codegraph security` | Security annotations |
+| `mini-codegraph jpa` | JPA entities |
+| `mini-codegraph batch` | Spring Batch jobs |
+| `mini-codegraph resilience` | Resilience policies |
+| `mini-codegraph pinia` | Pinia stores |
+| `mini-codegraph i18n` | i18n message usage |
+| `mini-codegraph docker` | Docker deployment containers |
+| `mini-codegraph k8s` | K8s resources |
+| `mini-codegraph openapi` | OpenAPI contracts |
+| `mini-codegraph diagram` | Mermaid architecture diagrams |
+| `mini-codegraph config` | `@ConfigurationProperties` bindings |
+| `mini-codegraph tx` | `@Transactional` annotations and propagation |
+| `mini-codegraph cache` | Cache annotations and cache topology |
+| `mini-codegraph lombok` | Lombok-synthesized methods |
+| `mini-codegraph grpc` | gRPC services |
+| `mini-codegraph mapstruct` | MapStruct mappers |
+| `mini-codegraph autoconfig` | `@ConditionalOn*` auto-configuration |
+| `mini-codegraph maven` | Maven module dependency graph |
+| `mini-codegraph gradle` | Gradle module dependency graph |
+| `mini-codegraph cloud-config` | `@RefreshScope` and Cloud Config |
+| `mini-codegraph loadbalancer` | `@LoadBalanced` clients |
+| `mini-codegraph graphql` | GraphQL endpoints |
+| `mini-codegraph websocket` | WebSocket endpoints |
+| `mini-codegraph test` | Test annotations |
+| `mini-codegraph async` | `@Async` and `@Scheduled` methods |
+| `mini-codegraph aop` | AOP aspects |
+| `mini-codegraph security-filter` | SecurityFilterChain rules |
+| `mini-codegraph k8s-net` | K8s Ingress/Service/NetworkPolicy |
+| `mini-codegraph advice` | `@ControllerAdvice` handlers |
+| `mini-codegraph interceptor` | HandlerInterceptor chain |
+| `mini-codegraph stream-func` | Spring Cloud Stream functions |
+| `mini-codegraph jpa-query` | JPA `@Query` annotations |
+| `mini-codegraph profile` | `@Profile` annotations |
 
 ## MCP Tools (12 tools)
 
 | Tool | Purpose |
 |---|---|
-| `mini_codegraph_search` | Quick symbol search by name |
-| `mini_codegraph_context` | **Primary** — Build comprehensive context for a task |
-| `mini_codegraph_trace` | Find call path between two symbols |
-| `mini_codegraph_explore` | Batch query related symbols grouped by file |
-| `mini_codegraph_callers` / `mini_codegraph_callees` | Find callers/callees |
-| `mini_codegraph_node` | Get symbol details + source |
-| `mini_codegraph_impact` | Blast radius analysis |
-| `mini_codegraph_files` | List indexed files |
-| `mini_codegraph_status` | Index health + detected frameworks |
-| `mini_codegraph_feign` | List FeignClient interfaces and microservice targets |
-| `mini_codegraph_mybatis` | Show MyBatis mapper XML bindings |
-| `mini_codegraph_modules` | List indexed modules |
-| `mini_codegraph_react` | List React components, hooks, stores, React Query |
-| `mini_codegraph_mongo` | List MongoDB entities, repositories, template usage |
-| `mini_codegraph_redis` | List Redis hashes, template operations |
-| `mini_codegraph_sql` | List SQL tables and statements (DDL/MyBatis/JPA/JDBC) |
+| `mini_cg_search` | Quick symbol search by name |
+| `mini_cg_context` | **Primary** — Build comprehensive context for a task |
+| `mini_cg_trace` | Find call path between two symbols |
+| `mini_cg_explore` | Batch query related symbols grouped by file |
+| `mini_cg_callers` / `mini_cg_callees` | Find callers/callees |
+| `mini_cg_node` | Get symbol details + source |
+| `mini_cg_impact` | Blast radius analysis |
+| `mini_cg_files` | List indexed files |
+| `mini_cg_status` | Index health + detected frameworks |
+| `mini_cg_feign` | List FeignClient interfaces and microservice targets |
+| `mini_cg_mybatis` | Show MyBatis mapper XML bindings |
+| `mini_cg_modules` | List indexed modules |
+| `mini_cg_react` | List React components, hooks, stores, React Query |
+| `mini_cg_mongo` | List MongoDB entities, repositories, template usage |
+| `mini_cg_redis` | List Redis hashes, template operations |
+| `mini_cg_sql` | List SQL tables and statements (DDL/MyBatis/JPA/JDBC) |
 
 ## Requirements
 

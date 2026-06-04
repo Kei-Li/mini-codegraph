@@ -183,6 +183,12 @@ const DEFAULT_IGNORE_PATTERNS: string[] = [
   '*.egg-info/',
   'cmake-build-*/',
   'bazel-*/',
+  '.env',
+  '.env.*',
+  '*.pem',
+  '*.key',
+  'credentials*',
+  'secret*',
 ]
 
 export function buildDefaultIgnore(rootDir: string, extraPatterns?: string[]): Ignore {

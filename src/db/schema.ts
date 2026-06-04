@@ -137,8 +137,33 @@ CREATE TABLE IF NOT EXISTS project_metadata (
   value TEXT NOT NULL
 );
 
-INSERT OR IGNORE INTO project_metadata (key, value) VALUES ('version', '2');
+INSERT OR IGNORE INTO project_metadata (key, value) VALUES ('version', '3');
 INSERT OR IGNORE INTO project_metadata (key, value) VALUES ('created_at', datetime('now'));
+
+CREATE TABLE IF NOT EXISTS external_symbols (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  providing_service TEXT NOT NULL,
+  definition_file TEXT DEFAULT '',
+  signature TEXT DEFAULT '',
+  metadata JSON DEFAULT '{}',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS external_references (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_location TEXT NOT NULL,
+  external_symbol_id TEXT NOT NULL REFERENCES external_symbols(id),
+  reference_type TEXT NOT NULL,
+  target_service TEXT DEFAULT '',
+  metadata JSON DEFAULT '{}',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_ext_ref_symbol ON external_references(external_symbol_id);
+CREATE INDEX IF NOT EXISTS idx_ext_ref_location ON external_references(source_location);
+CREATE INDEX IF NOT EXISTS idx_ext_sym_service ON external_symbols(providing_service);
 `
 
 export const DELETE_FILE_NODES = `DELETE FROM nodes WHERE file_path = ?`
@@ -262,3 +287,16 @@ export const INSERT_TEMPLATE = `
   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 `
 export const GET_TEMPLATES_BY_MODULE = `SELECT * FROM templates WHERE module_id = ?`
+
+/* External cross-service tables */
+export const INSERT_EXTERNAL_SYMBOL = "INSERT OR REPLACE INTO external_symbols (id, name, kind, providing_service, definition_file, signature, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)"
+export const INSERT_EXTERNAL_REFERENCE = "INSERT INTO external_references (source_location, external_symbol_id, reference_type, target_service, metadata) VALUES (?, ?, ?, ?, ?)"
+export const GET_EXTERNAL_SYMBOLS_BY_SERVICE = "SELECT * FROM external_symbols WHERE providing_service = ?"
+export const GET_EXTERNAL_SYMBOL_BY_ID = "SELECT * FROM external_symbols WHERE id = ?"
+export const GET_EXTERNAL_REFS_BY_SYMBOL = "SELECT * FROM external_references WHERE external_symbol_id = ?"
+export const GET_EXTERNAL_REFS_BY_SYMBOL_NAME = "SELECT r.*, s.name as symbol_name, s.providing_service as service_name, s.signature FROM external_references r JOIN external_symbols s ON r.external_symbol_id = s.id WHERE s.name = ?"
+export const GET_EXTERNAL_REFS_BY_SOURCE_NAME = "SELECT r.*, s.name as symbol_name, s.providing_service as service_name, s.signature FROM external_references r JOIN external_symbols s ON r.external_symbol_id = s.id WHERE r.source_location LIKE ?"
+export const GET_ALL_EXTERNAL_SYMBOLS = "SELECT * FROM external_symbols"
+export const GET_ALL_EXTERNAL_REFERENCES = "SELECT * FROM external_references"
+export const DELETE_EXTERNAL_SYMBOLS_BY_SERVICE = "DELETE FROM external_symbols WHERE providing_service = ?"
+export const DELETE_EXTERNAL_REFS_BY_SERVICE = "DELETE FROM external_references WHERE target_service = ? OR external_symbol_id IN (SELECT id FROM external_symbols WHERE providing_service = ?)"
