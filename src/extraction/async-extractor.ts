@@ -4,7 +4,7 @@ export interface AsyncAnnotation {
   classFile: string
   methodName: string
   returnType: string
-  annotation: 'Async' | 'Scheduled' | 'AsyncScheduled'
+  annotation: 'Async' | 'Scheduled' | 'AsyncScheduled' | 'JobRunr' | 'JobRunrRecurring'
   cronExpression?: string
   fixedRate?: number
   fixedDelay?: number
@@ -13,6 +13,7 @@ export interface AsyncAnnotation {
   line: number
   moduleId: string
   virtualThread?: boolean
+  jobName?: string
 }
 
 const SCHEDULED_ATTRS = ['cron', 'fixedRate', 'fixedDelay', 'initialDelay', 'zone']
@@ -45,6 +46,12 @@ export function indexAsyncAnnotations(
     } else if (line.startsWith('@Scheduled')) {
       annotation = 'Scheduled'
       annValue = line
+    } else if (line.startsWith('@Job(') || line.startsWith('@Job ') || line === '@Job') {
+      annotation = 'JobRunr'
+      annValue = line
+    } else if (line.startsWith('@Recurring(') || line.startsWith('@Recurring ') || line === '@Recurring') {
+      annotation = 'JobRunrRecurring'
+      annValue = line
     } else if (line.startsWith('@EnableVirtualThreads')) {
       queries.insertAnnotation(
         `${filePath}:EnableVirtualThreads`,
@@ -71,8 +78,9 @@ export function indexAsyncAnnotations(
     let fixedDelay: number | undefined
     let initialDelay: number | undefined
     let executor: string | undefined
+    let jobName: string | undefined
 
-    if (annotation === 'Scheduled') {
+    if (annotation === 'Scheduled' || annotation === 'JobRunrRecurring') {
       const cronM = fullAnnSrc.match(/cron\s*=\s*["']([^"']+)["']/)
       if (cronM) cronExpr = cronM[1]
       const rateM = fullAnnSrc.match(/fixedRate\s*=\s*(\d+)/)
@@ -81,6 +89,9 @@ export function indexAsyncAnnotations(
       if (delayM) fixedDelay = parseInt(delayM[1], 10)
       const initM = fullAnnSrc.match(/initialDelay\s*=\s*(\d+)/)
       if (initM) initialDelay = parseInt(initM[1], 10)
+    } else if (annotation === 'JobRunr') {
+      const nameM = fullAnnSrc.match(/(?:name|id)\s*=\s*["']([^"']+)["']/)
+      if (nameM) jobName = nameM[1]
     } else {
       const execM = fullAnnSrc.match(/@Async\s*\(\s*["']([^"']+)["']/)
       if (execM) executor = execM[1]
@@ -99,6 +110,7 @@ export function indexAsyncAnnotations(
       line: i + 1,
       moduleId,
       virtualThread: vtContext,
+      jobName,
     }
     results.push(ann)
 
@@ -108,8 +120,13 @@ export function indexAsyncAnnotations(
     for (const pn of parentNodes) {
       const meta: Record<string, any> = { cron: cronExpr, fixedRate, fixedDelay, executor }
       if (vtContext) meta.virtualThread = true
+      if (ann.jobName) meta.jobName = ann.jobName
       queries.insertAnnotation(nodeId, annotation, JSON.stringify(meta), i + 1, moduleId)
-      queries.insertEdge(pn.id, nodeId, annotation === 'Async' ? 'async_method' : 'scheduled_method',
+      let edgeKind = 'async_method'
+      if (annotation === 'Scheduled') edgeKind = 'scheduled_method'
+      else if (annotation === 'JobRunr') edgeKind = 'jobrunr_method'
+      else if (annotation === 'JobRunrRecurring') edgeKind = 'jobrunr_recurring'
+      queries.insertEdge(pn.id, nodeId, edgeKind,
         JSON.stringify(meta), i + 1, 0)
     }
   }

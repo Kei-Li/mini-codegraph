@@ -126,9 +126,18 @@ export class WorkspaceScanner {
       try {
         const pkg = JSON.parse(readFileSync(join(projectPath, 'package.json'), 'utf-8'))
         const deps = { ...pkg.dependencies, ...pkg.devDependencies } as Record<string, string>
-        if (deps.vue || deps.nuxt) { language = 'vue'; frameworks.push('vue') }
-        else if (deps.react || deps['react-dom'] || deps.next) { language = 'typescript'; frameworks.push('react') }
-        else if (deps['@angular/core'] || deps['@angular/common'] || deps.angular) { language = 'typescript'; frameworks.push('angular') }
+        if (deps.vue || deps.nuxt) {
+          language = 'vue'; frameworks.push('vue')
+          if (deps.nuxt || deps['nuxt3']) frameworks.push('ssr-nuxt')
+          if (existsSync(join(projectPath, 'server'))) frameworks.push('ssr-nuxt-server')
+        } else if (deps.react || deps['react-dom'] || deps.next) {
+          language = 'typescript'; frameworks.push('react')
+          if (deps.next) {
+            frameworks.push('ssr-next')
+            if (existsSync(join(projectPath, 'app'))) frameworks.push('ssr-next-app-router')
+            if (existsSync(join(projectPath, 'pages'))) frameworks.push('ssr-next-pages-router')
+          }
+        } else if (deps['@angular/core'] || deps['@angular/common'] || deps.angular) { language = 'typescript'; frameworks.push('angular') }
         else language = 'typescript'
       } catch { language = 'typescript' }
     } else if (hasRequirements || hasPythonProject(projectPath)) {

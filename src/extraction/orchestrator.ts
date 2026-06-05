@@ -59,6 +59,13 @@ import { indexJpaCustomQueries } from './jpa-query-extractor.js'
 import { indexProfileAnnotations } from './profile-extractor.js'
 import { indexObservationAnnotations } from './observability-extractor.js'
 import { indexHttpExchanges } from './http-exchange-extractor.js'
+import { indexSpringIntegration } from './spring-integration-extractor.js'
+import { indexSpringLdap } from './spring-ldap-extractor.js'
+import { indexSpringSession } from './spring-session-extractor.js'
+import { indexR2dbcEntities } from './r2dbc-extractor.js'
+import { indexJooqUsage } from './jooq-extractor.js'
+import { indexCssClasses, indexHtmlElements } from './frontend-assets-extractor.js'
+import { indexGraphqlSchema } from './graphql-schema-extractor.js'
 
 export function sourceIncludesAny(source: string, keywords: string[]): boolean {
   for (const kw of keywords) {
@@ -77,7 +84,7 @@ export const EXTRACTOR_GUARDS: Record<string, string[]> = {
   graphql: ['@QueryMapping', '@MutationMapping', '@SchemaMapping', '@GraphQlController', '@GraphQl'],
   websocket: ['@MessageController', '@MessageMapping', '@SendToUser'],
   test: ['@Test', '@SpringBootTest', '@MockBean', '@InjectMocks', '@BeforeEach', '@BeforeAll', '@ExtendWith'],
-  async: ['@Async', '@EnableAsync', '@Scheduled', '@EnableScheduling'],
+  async: ['@Async', '@EnableAsync', '@Scheduled', '@EnableScheduling', 'org.jobrunr', '@Recurring'],
   aop: ['@Aspect', '@Pointcut', '@Around', '@Before(', '@After(', '@AfterReturning', '@AfterThrowing'],
   securityFilter: ['@SecurityFilterChain', '@WebSecurityConfigurer'],
   controllerAdvice: ['@ControllerAdvice', '@RestControllerAdvice', '@ExceptionHandler'],
@@ -87,6 +94,11 @@ export const EXTRACTOR_GUARDS: Record<string, string[]> = {
   redis: ['@RedisHash', '@Cacheable', '@CacheEvict', '@CachePut', '@Caching'],
   observability: ['@Observed', '@Observation', '@Timed', '@Counted', '@SpanTag', 'ObservationRegistry', 'micrometer-tracing'],
   httpExchange: ['@HttpExchange', '@GetExchange', '@PostExchange', '@PutExchange', '@DeleteExchange', '@PatchExchange'],
+  springIntegration: ['@MessageEndpoint', '@ServiceActivator', '@Router', '@Splitter', '@Aggregator', '@Transformer', '@Filter', '@InboundChannelAdapter', '@OutboundChannelAdapter', '@BridgeFrom', '@BridgeTo'],
+  springLdap: ['@Entry(', '@LdapRepository', 'ldapTemplate'],
+  springSession: ['@EnableRedisHttpSession', '@EnableJdbcHttpSession', '@EnableMongoHttpSession', '@EnableHazelcastHttpSession'],
+  r2dbc: ['org.springframework.data.r2dbc', 'org.springframework.data.relational', 'DatabaseClient', 'R2dbcRepository'],
+  jooq: ['org.jooq', 'DSLContext', 'DSL.', 'jooq'],
 }
 
 export const ALL_EXTRACTOR_KEYWORDS: string[] = [
@@ -95,6 +107,7 @@ export const ALL_EXTRACTOR_KEYWORDS: string[] = [
     'StreamBridge', 'Function<', 'Supplier<', 'Consumer<', 'java.util.function',
     'Mongo', 'mongo', 'Document', 'mongodb',
     'sql', 'SQL', 'Sql', 'jdbc', 'Jdbc', 'PreparedStatement', 'ResultSet', 'Connection', 'DataSource',
+    'org.jooq', 'DSLContext', 'DSL.', 'jooq',
   ]),
 ]
 
@@ -573,6 +586,27 @@ export class ExtractionOrchestrator {
     if (lang.name === 'yaml' || lang.name === 'properties') {
       return { nodes: [], edges: [], errors: [] }
     }
+    if (lang.name === 'css') {
+      const source = readFileSync(filePath, 'utf-8')
+      const mid = moduleId || 'default'
+      const relPath = relative(projectRoot, filePath).replace(/\\/g, '/')
+      indexCssClasses(this.queries, source, relPath, mid)
+      return { nodes: [], edges: [], errors: [] }
+    }
+    if (lang.name === 'html') {
+      const source = readFileSync(filePath, 'utf-8')
+      const mid = moduleId || 'default'
+      const relPath = relative(projectRoot, filePath).replace(/\\/g, '/')
+      indexHtmlElements(this.queries, source, relPath, mid)
+      return { nodes: [], edges: [], errors: [] }
+    }
+    if (lang.name === 'graphql') {
+      const source = readFileSync(filePath, 'utf-8')
+      const mid = moduleId || 'default'
+      const relPath = relative(projectRoot, filePath).replace(/\\/g, '/')
+      indexGraphqlSchema(this.queries, source, relPath, mid)
+      return { nodes: [], edges: [], errors: [] }
+    }
 
     const mid = moduleId || 'default'
 
@@ -749,7 +783,7 @@ export class ExtractionOrchestrator {
         })))
       }
 
-      if (lang.name === 'java' && sourceIncludesAny(source, ALL_EXTRACTOR_KEYWORDS)) {
+      if ((lang.name === 'java' || lang.name === 'kotlin') && sourceIncludesAny(source, ALL_EXTRACTOR_KEYWORDS)) {
         if (shouldRunExtractor(source, 'jpa')) indexJpaEntities(this.queries, source, relPath, mid)
         if (shouldRunExtractor(source, 'security')) indexSecurity(this.queries, source, relPath, mid)
         if (shouldRunExtractor(source, 'batch')) indexBatchJobs(this.queries, source, relPath, mid)
@@ -769,6 +803,11 @@ export class ExtractionOrchestrator {
         if (shouldRunExtractor(source, 'redis')) indexRedisAnnotations(this.queries, source, relPath, mid)
         if (shouldRunExtractor(source, 'observability')) indexObservationAnnotations(this.queries, source, relPath, mid)
         if (shouldRunExtractor(source, 'httpExchange')) indexHttpExchanges(this.queries, source, relPath, mid)
+        if (shouldRunExtractor(source, 'springIntegration')) indexSpringIntegration(this.queries, source, relPath, mid)
+        if (shouldRunExtractor(source, 'springLdap')) indexSpringLdap(this.queries, source, relPath, mid)
+        if (shouldRunExtractor(source, 'springSession')) indexSpringSession(this.queries, source, relPath, mid)
+        if (shouldRunExtractor(source, 'r2dbc')) indexR2dbcEntities(this.queries, source, relPath, mid)
+        if (shouldRunExtractor(source, 'jooq')) indexJooqUsage(this.queries, source, relPath, mid)
         if (sourceIncludesAny(source, ['StreamBridge', 'Function<', 'Supplier<', 'Consumer<', 'java.util.function'])) {
           indexStreamFunctions(this.queries, source, relPath, mid, projectRoot)
         }
@@ -832,7 +871,7 @@ export class ExtractionOrchestrator {
     if (!validated) return { nodes: [], edges: [], errors: [`Path rejected: ${filePath} is outside project root ${projectRoot}`] }
     const absPath = validated
     const lang = languageForFile(absPath)
-    if (!lang || !['java', 'typescript', 'python', 'vue'].includes(lang.name)) {
+    if (!lang || !['java', 'kotlin', 'typescript', 'python', 'vue'].includes(lang.name)) {
       return { nodes: [], edges: [], errors: [] }
     }
 
@@ -905,7 +944,7 @@ export class ExtractionOrchestrator {
                 filePath: relPath,
               })))
             }
-            if (lang.name === 'java' && sourceIncludesAny(src, ALL_EXTRACTOR_KEYWORDS)) {
+            if ((lang.name === 'java' || lang.name === 'kotlin') && sourceIncludesAny(src, ALL_EXTRACTOR_KEYWORDS)) {
               if (shouldRunExtractor(src, 'jpa')) indexJpaEntities(this.queries, src, relPath, moduleId)
               if (shouldRunExtractor(src, 'security')) indexSecurity(this.queries, src, relPath, moduleId)
               if (shouldRunExtractor(src, 'batch')) indexBatchJobs(this.queries, src, relPath, moduleId)
@@ -925,6 +964,11 @@ export class ExtractionOrchestrator {
               if (shouldRunExtractor(src, 'redis')) indexRedisAnnotations(this.queries, src, relPath, moduleId)
               if (shouldRunExtractor(src, 'observability')) indexObservationAnnotations(this.queries, src, relPath, moduleId)
               if (shouldRunExtractor(src, 'httpExchange')) indexHttpExchanges(this.queries, src, relPath, moduleId)
+              if (shouldRunExtractor(src, 'springIntegration')) indexSpringIntegration(this.queries, src, relPath, moduleId)
+              if (shouldRunExtractor(src, 'springLdap')) indexSpringLdap(this.queries, src, relPath, moduleId)
+              if (shouldRunExtractor(src, 'springSession')) indexSpringSession(this.queries, src, relPath, moduleId)
+              if (shouldRunExtractor(src, 'r2dbc')) indexR2dbcEntities(this.queries, src, relPath, moduleId)
+              if (shouldRunExtractor(src, 'jooq')) indexJooqUsage(this.queries, src, relPath, moduleId)
               if (sourceIncludesAny(src, ['StreamBridge', 'Function<', 'Supplier<', 'Consumer<', 'java.util.function'])) {
                 indexStreamFunctions(this.queries, src, relPath, moduleId, projectRoot)
               }

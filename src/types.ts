@@ -100,6 +100,9 @@ export const SUPPORTED_LANGUAGES: LanguageConfig[] = [
   { name: 'yaml', extensions: ['.yml', '.yaml'], grammarName: '', grammarWasmFile: '' },
   { name: 'properties', extensions: ['.properties'], grammarName: '', grammarWasmFile: '' },
   { name: 'dockerfile', extensions: ['Dockerfile', '.dockerfile'], grammarName: '', grammarWasmFile: '' },
+  { name: 'css', extensions: ['.css', '.scss', '.less'], grammarName: '', grammarWasmFile: '' },
+  { name: 'html', extensions: ['.html', '.htm'], grammarName: '', grammarWasmFile: '' },
+  { name: 'graphql', extensions: ['.graphql', '.gql'], grammarName: '', grammarWasmFile: '' },
 ]
 
 export interface SearchResult {
