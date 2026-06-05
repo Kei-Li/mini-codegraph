@@ -392,9 +392,9 @@ export class QueryManager {
     stmt.run(id, name, kind, providingService, definitionFile, signature, metadata)
   }
 
-  insertExternalReference(sourceLocation: string, externalSymbolId: string, referenceType: string, targetService: string, metadata: string): void {
+  insertExternalReference(sourceLocation: string, externalSymbolId: string, referenceType: string, targetService: string, metadata: string, sourceService = ''): void {
     const stmt = this.db.prepare(Q.INSERT_EXTERNAL_REFERENCE)
-    stmt.run(sourceLocation, externalSymbolId, referenceType, targetService, metadata)
+    stmt.run(sourceLocation, externalSymbolId, referenceType, targetService, sourceService, metadata)
   }
 
   getExternalSymbolsByService(serviceName: string): { id: string; name: string; kind: string; providingService: string; signature: string }[] {
@@ -426,7 +426,7 @@ export class QueryManager {
     }))
   }
 
-  getAllExternalReferences(): { id: string; sourceLocation: string; symbolName: string; serviceName?: string; detail?: string; sourceSymbol: string }[] {
+  getAllExternalReferences(): { id: string; sourceLocation: string; symbolName: string; serviceName?: string; sourceService?: string; referenceType?: string; detail?: string; sourceSymbol: string }[] {
     const stmt = this.db.prepare(Q.GET_ALL_EXTERNAL_REFERENCES)
     const rows = stmt.all() as Record<string, any>[]
     return rows.map(r => ({
@@ -435,6 +435,8 @@ export class QueryManager {
       symbolName: r.external_symbol_id,
       sourceSymbol: r.external_symbol_id,
       serviceName: r.target_service,
+      sourceService: r.source_service,
+      referenceType: r.reference_type,
     }))
   }
 

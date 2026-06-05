@@ -59,6 +59,13 @@ program
             console.error(`  ${err}`)
           }
         }
+
+        const workspaceRoot = options.workspace ? resolve(options.workspace) : undefined
+        if (workspaceRoot) {
+          console.error('\nRunning cross-module resolution pipeline...')
+          const wsResult = await cg.initWorkspace(workspaceRoot)
+          console.error(`Workspace: ${wsResult.symbolsAdded} external symbols, ${wsResult.refsAdded} references`)
+        }
       }
 
       cg.close()

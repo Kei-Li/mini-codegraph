@@ -1,6 +1,53 @@
 import type { QueryManager } from '../db/queries.js'
 import type { ExternalSymbol, ExternalReference } from '../types.js'
 
+const KIND_COMPAT: Record<string, string[]> = {
+  rpc_call: ['http_endpoint', 'gateway_route'],
+  http_request: ['http_endpoint', 'gateway_route'],
+  mq_publish: ['mq_queue', 'mq_exchange'],
+  mq_subscribe: ['mq_queue', 'mq_exchange'],
+  cache_get: ['cache_key'],
+  cache_put: ['cache_key'],
+  db_rw: ['db_table', 'db_collection', 'db_table'],
+  gateway_route: ['http_endpoint'],
+}
+
+function candidateScore(consume: { symbolId: string; referenceType: string }, provide: { id: string; name: string; kind: string; signature: string }): number {
+  let score = 0
+
+  const compat = KIND_COMPAT[consume.referenceType] || ['http_endpoint', 'gateway_route', 'mq_queue', 'cache_key', 'db_table']
+  if (compat.includes(provide.kind)) {
+    score += 10
+  }
+
+  const consumeLower = consume.symbolId.toLowerCase()
+  const nameWords = provide.name.split(/(?=[A-Z])/).map(w => w.toLowerCase()).filter(Boolean)
+  for (const w of nameWords) {
+    if (w.length >= 3 && consumeLower.includes(w)) {
+      score += 5
+    }
+  }
+
+  const idWords = provide.id.toLowerCase().split(/[.\-_]/).filter(w => w.length >= 3)
+  for (const w of idWords) {
+    if (consumeLower.includes(w)) {
+      score += 3
+    }
+  }
+
+  const sig = (provide.signature ?? '').toLowerCase()
+  if (sig) {
+    const sigWords = sig.split(/[\s,/()]+/).filter(w => w.length >= 3)
+    for (const w of sigWords) {
+      if (consumeLower.includes(w)) {
+        score += 2
+      }
+    }
+  }
+
+  return score
+}
+
 export class WorkspaceGraphBuilder {
   private queries: QueryManager
   private currentService: string
@@ -10,11 +57,16 @@ export class WorkspaceGraphBuilder {
     this.currentService = currentService
   }
 
+  setCurrentService(service: string): void {
+    this.currentService = service
+  }
+
   buildGlobalGraph(
     allProjectsProvides: Map<string, { id: string; name: string; kind: string; signature: string }[]>,
     currentProjectConsumes: { symbolId: string; referenceType: string; sourceLocation: string }[]
   ): { symbols: ExternalSymbol[]; refs: ExternalReference[] } {
     const symbolMap = new Map<string, ExternalSymbol>()
+    const byService = new Map<string, ExternalSymbol[]>()
     const refs: ExternalReference[] = []
 
     for (const [serviceName, provides] of allProjectsProvides) {
@@ -29,11 +81,32 @@ export class WorkspaceGraphBuilder {
           metadata: '{}',
         }
         symbolMap.set(p.id, sym)
+        const list = byService.get(serviceName) || []
+        list.push(sym)
+        byService.set(serviceName, list)
       }
     }
 
     for (const consume of currentProjectConsumes) {
-      const matchedSymbol = symbolMap.get(consume.symbolId)
+      let matchedSymbol = symbolMap.get(consume.symbolId)
+      if (!matchedSymbol) {
+        const svcMatch = consume.symbolId.match(/\.(\w[\w-]*)\.[^.]+$/)
+        if (svcMatch) {
+          const candidates = byService.get(svcMatch[1]) || []
+          if (candidates.length > 0) {
+            let bestScore = -1
+            let bestIdx = 0
+            for (let i = 0; i < candidates.length; i++) {
+              const score = candidateScore(consume, candidates[i])
+              if (score > bestScore) {
+                bestScore = score
+                bestIdx = i
+              }
+            }
+            matchedSymbol = bestScore >= 0 ? candidates[bestIdx] : candidates[0]
+          }
+        }
+      }
       if (matchedSymbol) {
         refs.push({
           id: 0,
@@ -56,7 +129,7 @@ export class WorkspaceGraphBuilder {
     const { symbols: newSymbols, refs: newRefs } = this.buildGlobalGraph(allProvides, currentConsumes)
 
     const newSymbolMap = new Map(newSymbols.map(s => [s.id, s]))
-    const newRefKeySet = new Set(newRefs.map(r => `${r.externalSymbolId}:${r.sourceLocation}:${r.referenceType}`))
+    const newRefKeySet = new Set(newRefs.map(r => `${r.externalSymbolId}:${r.sourceLocation}:${r.targetService}`))
 
     const existingSymbols = this.queries.getAllExternalSymbols()
     const existingRefs = this.queries.getAllExternalReferences()
@@ -92,19 +165,44 @@ export class WorkspaceGraphBuilder {
     }
 
     for (const ref of newRefs) {
-      const refKey = `${ref.externalSymbolId}:${ref.sourceLocation}:${ref.referenceType}`
+      const refKey = `${ref.externalSymbolId}:${ref.sourceLocation}:${ref.targetService}`
       if (!existingRefKeySet.has(refKey)) {
-        this.queries.insertExternalReference(ref.sourceLocation, ref.externalSymbolId, ref.referenceType, ref.targetService, ref.metadata)
+        this.queries.insertExternalReference(ref.sourceLocation, ref.externalSymbolId, ref.referenceType, ref.targetService, ref.metadata, this.currentService)
+        this.upsertSyntheticNode(ref.externalSymbolId, ref.referenceType, ref.targetService)
       }
     }
 
     for (const existing of existingRefs) {
       const refKey = `${existing.symbolName}:${existing.sourceLocation}:${existing.serviceName ?? ''}`
-      if ((existing.serviceName === this.currentService || existingRefsByService.has(refKey)) && !newRefKeySet.has(refKey)) {
+      if ((existing.sourceService === this.currentService) && !newRefKeySet.has(refKey)) {
         this.queries.getDb().exec(
           `DELETE FROM external_references WHERE id = ${existing.id}`
         )
       }
+    }
+  }
+
+  private upsertSyntheticNode(symbolId: string, kind: string, serviceName: string): void {
+    const nodeId = `ext://${symbolId}`
+    const name = symbolId.includes('.') ? symbolId.split('.').pop() || symbolId : symbolId
+    const kindMap: Record<string, string> = {
+      rpc_call: 'external_endpoint',
+      http_request: 'external_endpoint',
+      mq_publish: 'external_queue',
+      mq_subscribe: 'external_queue',
+      cache_get: 'external_cache',
+      db_rw: 'external_table',
+      gateway_route: 'external_gateway',
+    }
+    const nodeKind = kindMap[kind] || 'external_symbol'
+    const fpath = `external://${serviceName}`
+    const db = this.queries.getDb()
+    const existing = db.prepare('SELECT id FROM nodes WHERE id = ?').get(nodeId) as { id: string } | undefined
+    if (!existing) {
+      db.prepare(
+        `INSERT INTO nodes (id, kind, name, qualified_name, file_path, language, start_line, end_line, start_column, end_column, signature, is_exported, module_id)
+         VALUES (?, ?, ?, ?, ?, 'workspace', 0, 0, 0, 0, ?, 1, ?)`
+      ).run(nodeId, nodeKind, name, nodeId, fpath, kind, serviceName)
     }
   }
 }

@@ -157,12 +157,14 @@ CREATE TABLE IF NOT EXISTS external_references (
   external_symbol_id TEXT NOT NULL REFERENCES external_symbols(id),
   reference_type TEXT NOT NULL,
   target_service TEXT DEFAULT '',
+  source_service TEXT DEFAULT '',
   metadata JSON DEFAULT '{}',
   created_at TEXT DEFAULT (datetime('now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_ext_ref_symbol ON external_references(external_symbol_id);
 CREATE INDEX IF NOT EXISTS idx_ext_ref_location ON external_references(source_location);
+CREATE INDEX IF NOT EXISTS idx_ext_ref_src_svc ON external_references(source_service);
 CREATE INDEX IF NOT EXISTS idx_ext_sym_service ON external_symbols(providing_service);
 `
 
@@ -290,7 +292,7 @@ export const GET_TEMPLATES_BY_MODULE = `SELECT * FROM templates WHERE module_id 
 
 /* External cross-service tables */
 export const INSERT_EXTERNAL_SYMBOL = "INSERT OR REPLACE INTO external_symbols (id, name, kind, providing_service, definition_file, signature, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)"
-export const INSERT_EXTERNAL_REFERENCE = "INSERT INTO external_references (source_location, external_symbol_id, reference_type, target_service, metadata) VALUES (?, ?, ?, ?, ?)"
+export const INSERT_EXTERNAL_REFERENCE = "INSERT INTO external_references (source_location, external_symbol_id, reference_type, target_service, source_service, metadata) VALUES (?, ?, ?, ?, ?, ?)"
 export const GET_EXTERNAL_SYMBOLS_BY_SERVICE = "SELECT * FROM external_symbols WHERE providing_service = ?"
 export const GET_EXTERNAL_SYMBOL_BY_ID = "SELECT * FROM external_symbols WHERE id = ?"
 export const GET_EXTERNAL_REFS_BY_SYMBOL = "SELECT * FROM external_references WHERE external_symbol_id = ?"

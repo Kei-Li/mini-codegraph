@@ -9,7 +9,7 @@ function createMockGraph(overrides: Partial<GraphQueryManager> = {}): GraphQuery
     getCallees: vi.fn().mockReturnValue([]),
     getContext: vi.fn().mockReturnValue({ callers: [], callees: [] }),
     getImpact: vi.fn().mockReturnValue([]),
-    findPath: vi.fn().mockReturnValue([]),
+    findPath: vi.fn().mockReturnValue({ paths: [], truncated: false, exploredNodes: 0 }),
     findRelated: vi.fn().mockReturnValue(new Map()),
     findMicroserviceArchitecture: vi.fn().mockReturnValue({ modules: [], dependencies: [], entryPoints: [] }),
     getFeignClients: vi.fn().mockReturnValue([]),
@@ -363,10 +363,14 @@ describe('MCP tools', () => {
           if (q === 'end') return [{ node: { id: '2', name: 'end', kind: 'function', filePath: 'b.ts', startLine: 1, endLine: 5 }, snippets: [], score: 1 }]
           return []
         }),
-        findPath: vi.fn().mockReturnValue([
-          [{ node: { id: '1', name: 'start', kind: 'function', filePath: 'a.ts', startLine: 1, endLine: 5 } },
-           { node: { id: '2', name: 'end', kind: 'function', filePath: 'b.ts', startLine: 1, endLine: 5 } }],
-        ]),
+        findPath: vi.fn().mockReturnValue({
+          paths: [
+            [{ node: { id: '1', name: 'start', kind: 'function', filePath: 'a.ts', startLine: 1, endLine: 5 } },
+             { node: { id: '2', name: 'end', kind: 'function', filePath: 'b.ts', startLine: 1, endLine: 5 } }],
+          ],
+          truncated: false,
+          exploredNodes: 2,
+        }),
       })
       const tools = createTools(graph)
       const tool = tools.find(t => t.name === 'mini_cg_trace')!

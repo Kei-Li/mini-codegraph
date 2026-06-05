@@ -8,16 +8,27 @@ export interface PathHop {
   detail?: string
 }
 
+export interface BfsResult {
+  paths: PathHop[][]
+  truncated: boolean
+  exploredNodes: number
+}
+
 export class GraphTraverser {
   constructor(private queries: QueryManager) {}
 
-  findPath(fromId: string, toId: string, maxDepth = 12): PathHop[][] {
+  findPath(fromId: string, toId: string, maxDepth = 12, maxNodes = 500): BfsResult {
     const paths: PathHop[][] = []
     const visited = new Set<string>()
+    let explored = 0
+    let truncated = false
 
     const bfs = (current: string, target: string, depth: number, path: PathHop[]): void => {
+      if (truncated) return
       if (depth > maxDepth || visited.has(current)) return
       visited.add(current)
+      explored++
+      if (explored > maxNodes) { truncated = true; return }
 
       const node = this.queries.getNode(current)
       if (!node) { visited.delete(current); return }
@@ -87,7 +98,7 @@ export class GraphTraverser {
     }
 
     bfs(fromId, toId, 0, [])
-    return paths
+    return { paths, truncated, exploredNodes: explored }
   }
 
   findCrossServiceCallees(node: MiniCodeGraphNode): { node: MiniCodeGraphNode; detail: string }[] {
@@ -508,19 +519,23 @@ export class GraphTraverser {
     return result.sort((a, b) => b.confidence - a.confidence)
   }
 
-  findPathBetweenModules(fromSymbol: string, toSymbol: string, maxDepth = 8): PathHop[][] {
-    const paths: PathHop[][] = []
+  findPathBetweenModules(fromSymbol: string, toSymbol: string, maxDepth = 8): BfsResult {
+    const allPaths: PathHop[][] = []
+    let truncated = false
+    let exploredNodes = 0
     const fromResults = this.queries.searchNodes(fromSymbol, 5)
     const toResults = this.queries.searchNodes(toSymbol, 5)
 
     for (const from of fromResults) {
       for (const to of toResults) {
-        const found = this.findPath(from.id, to.id, maxDepth)
-        paths.push(...found)
+        const result = this.findPath(from.id, to.id, maxDepth)
+        allPaths.push(...result.paths)
+        exploredNodes += result.exploredNodes
+        if (result.truncated) truncated = true
       }
     }
 
-    return paths
+    return { paths: allPaths, truncated, exploredNodes }
   }
 
   findCrossModuleReferences(nodeId: string): { node: MiniCodeGraphNode; edgeKind: string; moduleId: string }[] {

@@ -27,3 +27,4 @@ export class ParserManager {
 }
 
 export { GrammarLoader } from '../../extraction/grammar-loader.js'
+export * as languages from './languages/index.js'

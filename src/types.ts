@@ -12,6 +12,8 @@ export type EdgeKind =
   | 'extends' | 'implements' | 'references'
   | 'type_of' | 'returns' | 'instantiates'
   | 'overrides' | 'decorates' | 'defines'
+  | 'dispatch_registration' | 'dispatch_call'
+  | 'proxy_wraps' | 'aop_advises' | 'conditional_impl'
 
 export interface MiniCodeGraphNode {
   id: string

@@ -216,6 +216,18 @@ export class ExtractionOrchestrator {
       process.stderr.write(`  Resolved ${resolvedRefs} cross-module references\n`)
     }
 
+    process.stderr.write('Running dispatch inference engine...\n')
+    try {
+      const { DispatchInferenceEngine } = await import('../resolution/dispatch-inference/index.js')
+      const engine = new DispatchInferenceEngine(this.queries, projectRoot, mid, [mid])
+      const dispatchResult = await engine.run()
+      if (dispatchResult.stats.totalEdges > 0) {
+        process.stderr.write(`  Inferred ${dispatchResult.stats.totalEdges} dispatch edges across ${dispatchResult.stats.totalPatterns} patterns\n`)
+      }
+    } catch (e) {
+      process.stderr.write(`  Dispatch inference skipped: ${e}\n`)
+    }
+
     process.stderr.write('Indexing OpenAPI contracts...\n')
     const openApiEndpoints = indexOpenApiContracts(this.queries, projectRoot, mid)
     if (openApiEndpoints.length > 0) {
@@ -385,6 +397,20 @@ export class ExtractionOrchestrator {
       console.error(`  Resolved ${totalCrossResolved} cross-module references`)
     }
 
+    console.error('Running cross-module dispatch inference...')
+    try {
+      const { DispatchInferenceEngine } = await import('../resolution/dispatch-inference/index.js')
+      for (const mod of modules) {
+        const engine = new DispatchInferenceEngine(this.queries, parentDir, mod.id, allModuleIds)
+        const dispatchResult = await engine.run()
+        if (dispatchResult.stats.totalEdges > 0) {
+          console.error(`  ${mod.name}: ${dispatchResult.stats.totalEdges} dispatch edges (${dispatchResult.stats.totalPatterns} patterns)`)
+        }
+      }
+    } catch (e) {
+      process.stderr.write(`  Dispatch inference skipped: ${e}\n`)
+    }
+
     const routeModule = modules.find(m => m.language === 'vue')
     if (routeModule) {
       const { extractAndStoreVueRouterRoutes } = await import('../resolution/index.js')
@@ -494,12 +520,15 @@ export class ExtractionOrchestrator {
     }
 
     let parseAttempt = 0
+    let useRegexFallback = false
+    let parseError = ''
     while (true) {
       try {
         await parseWithRetry(parseAttempt)
         break
       } catch (e) {
         const errMsg = String(e)
+        parseError = errMsg
         const isOom = errMsg.includes('out of memory') || errMsg.includes('OOM') || errMsg.includes('abort') || errMsg.includes('RuntimeError') || errMsg.includes('memory access out of bounds')
 
         // Tier 1: retry with fresh grammar (WASM heap reset)
@@ -533,12 +562,31 @@ export class ExtractionOrchestrator {
           continue
         }
 
+        // Exhausted retries — fall back to regex for supported languages
+        if (lang.name === 'java') {
+          console.error(`  Falling back to regex parser for ${filePath}`)
+          useRegexFallback = true
+          break
+        }
+
         return { nodes: [], edges: [], errors: [`Error processing ${filePath}: ${errMsg}`] }
       }
     }
 
-    try {
-      const parseResult = lang.name === 'java'
+    let parseResult: { nodes: any[]; edges: any[]; errors?: string[] }
+
+    if (useRegexFallback) {
+      const { parseJavaFileWithRegex } = await import('./languages/java.js')
+      try {
+        const fallbackSource = source || readFileSync(filePath, 'utf-8')
+        const fbRelPath = relPath || relative(projectRoot, filePath).replace(/\\/g, '/')
+        parseResult = parseJavaFileWithRegex(fallbackSource, fbRelPath, lang.name)
+        parseResult.errors = [`Regex fallback used for ${filePath}: ${parseError}`]
+      } catch (fbErr) {
+        return { nodes: [], edges: [], errors: [`Error processing ${filePath}: ${parseError}; fallback also failed: ${fbErr}`] }
+      }
+    } else {
+      parseResult = lang.name === 'java'
         ? parseJavaFile(tree, source, relPath, lang.name)
         : lang.name === 'python'
           ? parsePythonFile(tree, source, relPath, lang.name)
@@ -547,7 +595,14 @@ export class ExtractionOrchestrator {
             : lang.name === 'kotlin'
               ? parseKotlinFile(source, relPath, parser, { language: 'kotlin', languageName: 'kotlin', namespaceDelimiter: '.', supportFullText: true })
               : parseTypeScriptFile(tree, source, relPath, lang.name)
+    }
 
+    // Ensure relPath is available for the rest of the function
+    if (!relPath) {
+      relPath = relative(projectRoot, filePath).replace(/\\/g, '/')
+    }
+
+    try {
       this.queries.deleteNodesForFile(relPath)
 
       const nodeMap = new Map<string, MiniCodeGraphNode>()

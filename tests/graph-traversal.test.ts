@@ -82,9 +82,10 @@ describe('GraphTraverser', () => {
       nodes: { a: nodeA, b: nodeB },
     })
     const traverser = new GraphTraverser(qm)
-    const paths = traverser.findPath('a', 'b', 5)
+    const { paths, exploredNodes } = traverser.findPath('a', 'b', 5)
     expect(paths.length).toBeGreaterThan(0)
     expect(paths[0].some(h => h.node.id === 'b')).toBe(true)
+    expect(exploredNodes).toBeGreaterThan(0)
   })
 
   it('returns empty when no path exists', () => {
@@ -95,7 +96,7 @@ describe('GraphTraverser', () => {
       nodes: { a: nodeA, c: nodeC },
     })
     const traverser = new GraphTraverser(qm)
-    const paths = traverser.findPath('a', 'c', 5)
+    const { paths } = traverser.findPath('a', 'c', 5)
     expect(paths).toHaveLength(0)
   })
 
@@ -112,7 +113,27 @@ describe('GraphTraverser', () => {
 
     const qm = createMockQueryManager({ callees, nodes: nodeMap })
     const traverser = new GraphTraverser(qm)
-    const paths = traverser.findPath('n0', 'n5', 3)
+    const { paths } = traverser.findPath('n0', 'n5', 3)
     expect(paths).toHaveLength(0)
+  })
+
+  it('truncates when maxNodes exceeded', () => {
+    // Chain of 10 nodes, but maxNodes=3 should force truncation
+    const nodes = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(i => createMockNode(`n${i}`, `func${i}`))
+    const nodeMap: Record<string, MiniCodeGraphNode> = {}
+    const callees: Record<string, MiniCodeGraphNode[]> = {}
+    for (let i = 0; i < 9; i++) {
+      nodeMap[nodes[i].id] = nodes[i]
+      callees[nodes[i].id] = [nodes[i + 1]]
+    }
+    nodeMap[nodes[9].id] = nodes[9]
+    callees[nodes[9].id] = []
+
+    const qm = createMockQueryManager({ callees, nodes: nodeMap })
+    const traverser = new GraphTraverser(qm)
+    const { paths, truncated, exploredNodes } = traverser.findPath('n0', 'n9', 20, 3)
+    expect(truncated).toBe(true)
+    expect(exploredNodes).toBeLessThanOrEqual(5) // maxNodes + a few extra from early returns
+    expect(paths).toHaveLength(0) // should not reach n9 before truncation
   })
 })

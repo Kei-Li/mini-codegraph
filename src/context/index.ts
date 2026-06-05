@@ -386,7 +386,7 @@ export class ContextBuilder {
     for (let i = 0; i < Math.min(symbols.length, 3); i++) {
       for (let j = i + 1; j < Math.min(symbols.length, 3); j++) {
         try {
-          const paths = this.graph.findPath(symbols[i].id, symbols[j].id, 8)
+          const { paths } = this.graph.findPath(symbols[i].id, symbols[j].id, 8)
           if (paths.length > 0) {
             for (const hop of paths[0]) {
               const calleesEntry: { name: string; filePath: string } = { name: hop.node.name, filePath: hop.node.filePath }

@@ -166,7 +166,7 @@ export function createTools(
         const fromNode = fromResults[0].node
         const toNode = toResults[0].node
 
-        const allPaths = graph.findPath(fromNode.id, toNode.id)
+        const { paths: allPaths, truncated: bfsTruncated } = graph.findPath(fromNode.id, toNode.id)
 
         if (allPaths.length === 0) {
           const inlineSource = (node: typeof fromNode, maxLines = 60, maxChars = 1800) => {
@@ -212,6 +212,7 @@ export function createTools(
             filePath: n.node.filePath, lines: `${n.node.startLine}-${n.node.endLine}`,
           }))),
           totalPaths: p.total, truncated: p.truncated,
+          bfsTruncated, // true if BFS was cut short by maxNodes limit
         }
       },
     },
@@ -595,6 +596,113 @@ export function createTools(
       },
     },
     createWorkspaceStatusHandler(),
+    {
+      name: 'mini_cg_dispatch',
+      description: 'Analyze dispatch patterns for a symbol — shows how an interface is routed to concrete implementations via proxy, AOP, strategy, factory, or reflection. Each path includes a confidence score.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          symbol: { type: 'string', description: 'Name of the interface, class, or method to analyze' },
+          minConfidence: { type: 'number', description: 'Minimum confidence filter (0.0 to 1.0, default: 0)' },
+          includeChain: { type: 'boolean', description: 'Recursively trace dispatch chain (default: true)' },
+          depth: { type: 'number', description: 'Max recursion depth for dispatch chain (default: 3, max: 5)' },
+        },
+        required: ['symbol'],
+      },
+      handler: async (args) => {
+        const symbol = typeof args.symbol === 'string' ? args.symbol.slice(0, 200) : ''
+        const minConfidence = typeof args.minConfidence === 'number' ? Math.max(0, Math.min(1, args.minConfidence)) : 0
+        const includeChain = args.includeChain !== false
+        const rawDepth = typeof args.depth === 'number' ? args.depth : 3
+        const depth = Math.min(rawDepth, 5)
+        if (!symbol) return { error: 'Symbol not found' }
+
+        const results = graph.search(symbol, 5)
+        if (results.length === 0) return { error: 'Symbol not found' }
+
+        const node = results[0].node
+        const dispatchTargets = graph.getDispatchTargets(node.id, { minConfidence })
+
+        const result: any = {
+          symbol: { name: node.name, kind: node.kind, filePath: node.filePath, lines: `${node.startLine}-${node.endLine}` },
+          dispatchTargets: dispatchTargets.map(dt => ({
+            target: { name: dt.targetName, id: dt.targetId },
+            confidence: dt.confidence,
+            provenance: dt.provenance,
+            detail: dt.provenanceDetail,
+            condition: dt.condition,
+            alternatives: dt.alternatives,
+          })),
+          totalTargets: dispatchTargets.length,
+        }
+
+        if (dispatchTargets.length === 0) {
+          result.note = `No dispatch patterns found for ${node.name}. Try with minConfidence=0 to see all.`
+        }
+
+        if (includeChain && dispatchTargets.length > 0) {
+          const chain = graph.getDispatchChain(node.id, depth)
+          result.dispatchChain = chain.map(c => ({
+            symbol: c.symbol ? { name: c.symbol.name, kind: c.symbol.kind, id: c.symbol.id } : null,
+            patterns: c.dispatchPatterns.map(p => ({
+              type: p.type,
+              sourceName: p.sourceName,
+              interfaceName: p.interfaceName,
+              targets: p.possibleTargets.map(t => ({
+                name: t.targetName, confidence: t.confidence, provenance: t.provenance, detail: t.provenanceDetail, condition: t.condition,
+              })),
+            })),
+          }))
+        }
+
+        return result
+      },
+    },
+    {
+      name: 'mini_cg_config',
+      description: 'Evaluate which implementation of an interface is active under the current (or overridden) configuration. Reads application.yml/properties, evaluates @Profile and @ConditionalOnProperty.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          interfaceName: { type: 'string', description: 'Name of the interface to check implementations for' },
+          configOverrides: {
+            type: 'object',
+            description: 'Optional config overrides to simulate (e.g. {"db.type": "mysql", "spring.profiles.active": "prod"})',
+            additionalProperties: { type: 'string' },
+          },
+        },
+        required: ['interfaceName'],
+      },
+      handler: async (args) => {
+        const ifaceName = typeof args.interfaceName === 'string' ? args.interfaceName.slice(0, 200) : ''
+        const configOverrides = typeof args.configOverrides === 'object' && args.configOverrides !== null
+          ? args.configOverrides as Record<string, string>
+          : undefined
+        if (!ifaceName) return { error: 'interfaceName required' }
+
+        const results = graph.getActiveImplementations(ifaceName, configOverrides)
+        if (results.length === 0) {
+          return { interfaceName: ifaceName, implementations: [], note: `No implementations found for ${ifaceName}. Check the interface name or run indexing first.` }
+        }
+
+        const activeCount = results.filter(r => r.active).length
+        return {
+          interfaceName: ifaceName,
+          totalImplementations: results.length,
+          activeImplementations: activeCount,
+          implementations: results.map(r => ({
+            className: r.className,
+            active: r.active,
+            confidence: r.confidence,
+            evaluations: r.evaluations.map(e => ({
+              matched: e.matched,
+              reason: e.reason,
+            })),
+          })),
+          configOverrides: configOverrides ? Object.entries(configOverrides).map(([k, v]) => `${k}=${v}`) : undefined,
+        }
+      },
+    },
   ]
 }
 

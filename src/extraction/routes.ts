@@ -47,6 +47,8 @@ export function detectRoutes(
 
   if (existsSync(pomPath) || existsSync(buildGradlePath)) {
     routes.push(...detectSpringRoutes(projectRoot, queries, graph))
+    // Also detect RestTemplate-based cross-service HTTP calls (design §8.1)
+    routes.push(...detectRestTemplateCalls(projectRoot))
   }
 
   if (existsSync(requirementsTxt)) {
@@ -594,6 +596,51 @@ function detectLaravelRoutes(projectRoot: string, _queries: QueryManager, _graph
     }
   }
 
+  return routes
+}
+
+export function detectRestTemplateCalls(projectRoot: string): RouteInfo[] {
+  const routes: RouteInfo[] = []
+  const javaFiles = findFilesByApiPattern(projectRoot, ['.java'])
+    .filter(f => {
+      try {
+        const content = readFileSync(f, 'utf-8')
+        return /\brestTemplate\b/.test(content)
+      } catch { return false }
+    })
+
+  const restMethods = [
+    'getForObject', 'getForEntity', 'postForObject', 'postForEntity',
+    'put', 'delete', 'patchForObject', 'exchange', 'execute',
+  ]
+  const urlPattern = new RegExp(
+    `restTemplate\\.(?:${restMethods.join('|')})\\s*\\(\\s*['"\`](https?://[^'"\`\\s)]+)['"\`]`,
+    'g'
+  )
+
+  for (const file of javaFiles) {
+    try {
+      const content = readFileSync(file, 'utf-8')
+      const relPath = file.replace(projectRoot, '').replace(/^[/\\]/, '').replace(/\\/g, '/')
+      const lines = content.split('\n')
+      urlPattern.lastIndex = 0
+      let m: RegExpExecArray | null
+      while ((m = urlPattern.exec(content)) !== null) {
+        const fullUri = m[1]
+        const pathPart = m[2]
+        const lineNum = content.substring(0, m.index).split('\n').length
+        routes.push({
+          framework: 'spring-resttemplate',
+          method: 'ANY',
+          path: fullUri,
+          handlerFile: relPath,
+          handlerName: `restTemplate call: ${fullUri}`,
+          handlerLine: lineNum,
+          sourceLine: lines[lineNum - 1]?.trim() ?? '',
+        })
+      }
+    } catch { /* silent */ }
+  }
   return routes
 }
 

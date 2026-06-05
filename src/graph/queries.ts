@@ -4,6 +4,10 @@ import { GraphTraverser } from './traversal.js'
 import { CodeAnalyzer } from '../analysis/index.js'
 import { runQualifiedSearch, fuzzySearchFallback } from '../search/index.js'
 import { safeJsonParse } from '../utils.js'
+import type { InferredTarget, DispatchPattern } from '../resolution/dispatch-inference/types.js'
+import { getDispatchTargetsForNode } from '../resolution/dispatch-inference/resolver.js'
+import { readProjectConfig } from '../resolution/config-reader.js'
+import { isNodeActiveUnderConfig } from '../resolution/condition-matcher.js'
 
 export class GraphQueryManager {
   private queries: QueryManager
@@ -174,8 +178,8 @@ export class GraphQueryManager {
     return this.traverser.findAffectedTestFiles(sourceFiles)
   }
 
-  findPath(fromId: string, toId: string, maxDepth = 12): import('./traversal.js').PathHop[][] {
-    return this.traverser.findPath(fromId, toId, maxDepth)
+  findPath(fromId: string, toId: string, maxDepth = 12, maxNodes = 500): import('./traversal.js').BfsResult {
+    return this.traverser.findPath(fromId, toId, maxDepth, maxNodes)
   }
 
   findMicroserviceArchitecture(): {
@@ -1248,6 +1252,315 @@ export class GraphQueryManager {
       } catch { /* silent */ }
     }
     return profiles
+  }
+
+  private inferServiceFromLocation(sourceLocation: string, modules: { id: string; rootPath: string }[]): string | null {
+    const normalized = sourceLocation.replace(/\\/g, '/')
+    // Absolute path match
+    for (const mod of modules) {
+      const root = mod.rootPath.replace(/\\/g, '/')
+      if (normalized.startsWith(root)) return mod.id
+    }
+    // sourceLocation is typically: src/main/java/com/demo/{service}/...
+    // Extract the {service} segment and match against known module names
+    const knownModules = new Map<string, string>()
+    for (const mod of modules) {
+      knownModules.set(mod.id, mod.id)
+      const dirName = mod.id.replace(/-service$/, '').replace(/-/g, '')
+      if (dirName !== mod.id) knownModules.set(dirName, mod.id)
+    }
+    // Match package-name segment (e.g., 'order' in com.demo.order → 'order-service')
+    const pkgMatch = normalized.match(/\/com\/demo\/([\w-]+)\//)
+    if (pkgMatch) {
+      const pkg = pkgMatch[1]
+      // try exact
+      if (knownModules.has(pkg)) return knownModules.get(pkg)!
+      // try with -service suffix
+      const withSvc = pkg + '-service'
+      if (knownModules.has(withSvc)) return withSvc
+    }
+    // Fallback: scan path segments for known service names
+    const parts = normalized.split(/[/\\:]/)
+    const knownServiceNames = modules.map(m => m.id)
+    for (const part of parts) {
+      if (knownServiceNames.includes(part)) return part
+    }
+    return null
+  }
+
+  getServiceConsumers(serviceName: string): { service: string; refs: { symbolId: string; referenceType: string; sourceLocation: string }[] }[] {
+    const symbols = this.queries.getAllExternalSymbols()
+    const refs = this.queries.getAllExternalReferences()
+    const modules = this.queries.getAllModules()
+
+    // symbols that serviceName provides
+    const providedSymbols = new Set(
+      symbols.filter(s => s.serviceName === serviceName).map(s => s.id)
+    )
+
+    // refs that consume those symbols → infer consumer from sourceLocation
+    const grouped = new Map<string, { symbolId: string; referenceType: string; sourceLocation: string }[]>()
+    for (const r of refs) {
+      if (providedSymbols.has(r.symbolName)) {
+        const consumer = this.inferServiceFromLocation(r.sourceLocation, modules) || 'unknown'
+        const refsList = grouped.get(consumer) || []
+        refsList.push({ symbolId: r.symbolName, referenceType: r.referenceType || '', sourceLocation: r.sourceLocation })
+        grouped.set(consumer, refsList)
+      }
+    }
+    return Array.from(grouped.entries()).map(([svc, refsList]) => ({ service: svc, refs: refsList }))
+  }
+
+  getServiceDependencies(serviceName: string): { service: string; refs: { symbolId: string; referenceType: string }[] }[] {
+    const symbols = this.queries.getAllExternalSymbols()
+    const refs = this.queries.getAllExternalReferences()
+    const modules = this.queries.getAllModules()
+
+    // refs where sourceLocation belongs to serviceName
+    const targetServices = new Map<string, { symbolId: string; referenceType: string }[]>()
+    for (const r of refs) {
+      const consumer = this.inferServiceFromLocation(r.sourceLocation, modules)
+      if (consumer !== serviceName) continue
+      const sym = symbols.find(s => s.id === r.symbolName)
+      const provider = sym?.serviceName || ''
+      if (!provider || provider === serviceName) continue
+      const items = targetServices.get(provider) || []
+      items.push({ symbolId: r.symbolName, referenceType: r.referenceType || '' })
+      targetServices.set(provider, items)
+    }
+    return Array.from(targetServices.entries()).map(([svc, items]) => ({ service: svc, refs: items }))
+  }
+
+  getDispatchTargets(
+    nodeId: string,
+    options?: { minConfidence?: number; kind?: string },
+  ): InferredTarget[] {
+    return getDispatchTargetsForNode(this.queries, nodeId, options?.minConfidence ?? 0)
+  }
+
+  getDispatchChain(nodeId: string, maxDepth = 3): {
+    symbol: MiniCodeGraphNode | undefined
+    dispatchPatterns: DispatchPattern[]
+  }[] {
+    const result: {
+      symbol: MiniCodeGraphNode | undefined
+      dispatchPatterns: DispatchPattern[]
+    }[] = []
+    const visited = new Set<string>()
+    const queue: string[] = [nodeId]
+
+    while (queue.length > 0 && result.length < maxDepth) {
+      const currentId = queue.shift()!
+      if (visited.has(currentId)) continue
+      visited.add(currentId)
+
+      const symbol = this.queries.getNode(currentId)
+      const allEdges = this.queries.getAllEdges()
+      const dispatchEdges = allEdges.filter(e =>
+        (e.sourceId === currentId || e.targetId === currentId) &&
+        ['dispatch_registration', 'proxy_wraps', 'aop_advises', 'conditional_impl'].includes(e.kind)
+      )
+
+      const patterns: DispatchPattern[] = []
+      for (const edge of dispatchEdges) {
+        try {
+          const meta = JSON.parse(edge.metadata ?? '{}')
+          const targetId = edge.sourceId === currentId ? edge.targetId : edge.sourceId
+          const targetNode = this.queries.getNode(targetId)
+          patterns.push({
+            type: meta.provenance ?? 'unknown',
+            sourceId: edge.sourceId,
+            sourceName: this.queries.getNode(edge.sourceId)?.name ?? '',
+            interfaceName: this.queries.getNode(edge.targetId)?.name,
+            possibleTargets: [{
+              targetId,
+              targetName: targetNode?.name ?? targetId,
+              confidence: meta.confidence ?? 0,
+              provenance: meta.provenance ?? 'unknown',
+              provenanceDetail: meta.provenanceDetail ?? '',
+              condition: meta.condition,
+              alternatives: meta.alternatives,
+            }],
+          })
+        } catch { /* silent */ }
+      }
+
+      result.push({ symbol, dispatchPatterns: patterns })
+
+      for (const p of patterns) {
+        for (const t of p.possibleTargets) {
+          if (!visited.has(t.targetId)) queue.push(t.targetId)
+        }
+      }
+    }
+
+    return result
+  }
+
+  getInferredEdgesByKind(kind: string): { sourceId: string; targetId: string; metadata: string }[] {
+    return this.queries.getAllEdges()
+      .filter(e => e.kind === kind)
+      .map(e => ({ sourceId: e.sourceId, targetId: e.targetId, metadata: e.metadata ?? '' }))
+  }
+
+  getCallersWithDispatch(
+    nodeId: string,
+    options?: { minConfidence?: number; includeInferred?: boolean },
+  ): { node: MiniCodeGraphNode; confidence: number; provenance: string; detail: string }[] {
+    const minConf = options?.minConfidence ?? 0
+    const includeInferred = options?.includeInferred ?? true
+
+    const staticCallers = this.queries.getCallers(nodeId)
+      .map(n => ({ node: n, confidence: 1.0, provenance: 'static_direct' as const, detail: 'Static call' }))
+
+    if (!includeInferred) return staticCallers
+
+    const dispatchTargets = getDispatchTargetsForNode(this.queries, nodeId, minConf)
+    const inferredCallers: { node: MiniCodeGraphNode; confidence: number; provenance: string; detail: string }[] = []
+
+    for (const dt of dispatchTargets) {
+      const targetNode = this.queries.getNode(dt.targetId)
+      if (!targetNode) continue
+
+      const targetCallers = this.queries.getCallers(dt.targetId)
+      for (const tc of targetCallers) {
+        inferredCallers.push({
+          node: tc,
+          confidence: dt.confidence,
+          provenance: dt.provenance,
+          detail: dt.provenanceDetail,
+        })
+      }
+    }
+
+    const seen = new Set<string>()
+    const merged = [...staticCallers, ...inferredCallers].filter(item => {
+      const key = `${item.node.id}:${item.provenance}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+
+    return merged
+  }
+
+  getActiveImplementations(
+    interfaceName: string,
+    configOverrides?: Record<string, string>,
+  ): { className: string; confidence: number; evaluations: { matched: boolean; reason: string }[]; active: boolean }[] {
+    const config = readProjectConfig(this.projectRoot)
+    if (configOverrides) {
+      for (const [key, value] of Object.entries(configOverrides)) {
+        config.properties.set(key, value)
+      }
+    }
+
+    const allNodes = this.queries.getAllNodes()
+    const ifaceNode = allNodes.find(n =>
+      (n.name === interfaceName || n.qualifiedName === interfaceName || n.qualifiedName.endsWith(`.${interfaceName}`)) &&
+      (n.kind === 'interface' || n.kind === 'class')
+    )
+    if (!ifaceNode) return []
+
+    const allEdges = this.queries.getAllEdges()
+    const implIds = allEdges
+      .filter(e => (e.kind === 'implements' || e.kind === 'conditional_impl') && e.targetId === ifaceNode.id)
+      .map(e => e.sourceId)
+
+    const nameImpls = allNodes.filter(n =>
+      n.kind === 'class' && n.moduleId === ifaceNode.moduleId &&
+      (n.name === `${ifaceNode.name}Impl` || n.name.endsWith(ifaceNode.name))
+    ).map(n => n.id)
+
+    const allIds = [...new Set([...implIds, ...nameImpls])]
+    const results: { className: string; confidence: number; evaluations: { matched: boolean; reason: string }[]; active: boolean }[] = []
+
+    for (const id of allIds) {
+      const result = isNodeActiveUnderConfig(this.queries, id, config)
+      const node = this.queries.getNode(id)
+      results.push({
+        className: node?.name ?? id,
+        confidence: result.active ? 0.8 : 0.3,
+        evaluations: result.evaluations.map(e => ({ matched: e.matched, reason: e.reason })),
+        active: result.active,
+      })
+    }
+
+    return results
+  }
+
+  getServiceDependencyGraph(): { nodes: { name: string; provides: number }[]; edges: { from: string; to: string; types: string[] }[] } {
+    const symbols = this.queries.getAllExternalSymbols()
+    const refs = this.queries.getAllExternalReferences()
+    const modules = this.queries.getAllModules()
+    const providesCount = new Map<string, number>()
+    for (const s of symbols) {
+      const svc = s.serviceName || ''
+      providesCount.set(svc, (providesCount.get(svc) || 0) + 1)
+    }
+    const allServiceNames = new Set(providesCount.keys())
+
+    const edges: { from: string; to: string; types: string[] }[] = []
+    const edgeSet = new Set<string>()
+    for (const r of refs) {
+      const consumer = this.inferServiceFromLocation(r.sourceLocation, modules)
+      const sym = symbols.find(s => s.id === r.symbolName)
+      const provider = sym?.serviceName || ''
+      if (consumer && provider && consumer !== provider && allServiceNames.has(consumer) && allServiceNames.has(provider)) {
+        const key = `${consumer}|${provider}`
+        const refType = r.referenceType || 'unknown'
+        if (!edgeSet.has(key)) {
+          edgeSet.add(key)
+          edges.push({ from: consumer, to: provider, types: [refType] })
+        } else {
+          const existing = edges.find(e => e.from === consumer && e.to === provider)
+          if (existing && !existing.types.includes(refType)) {
+            existing.types.push(refType)
+          }
+        }
+      }
+    }
+
+    const nodes = Array.from(allServiceNames).map(name => ({ name, provides: providesCount.get(name) || 0 }))
+    return { nodes, edges }
+  }
+
+  findWorkspaceCircularDeps(): { cycle: string[] }[] {
+    const graph = this.getServiceDependencyGraph()
+    const adj = new Map<string, string[]>()
+    for (const n of graph.nodes) adj.set(n.name, [])
+    for (const e of graph.edges) {
+      adj.get(e.from)?.push(e.to)
+    }
+
+    const cycles: { cycle: string[] }[] = []
+    const visited = new Set<string>()
+    const recStack = new Set<string>()
+    const path: string[] = []
+
+    const dfs = (node: string): void => {
+      visited.add(node)
+      recStack.add(node)
+      path.push(node)
+      for (const neighbor of adj.get(node) || []) {
+        if (!visited.has(neighbor)) {
+          dfs(neighbor)
+        } else if (recStack.has(neighbor)) {
+          const cycleStart = path.indexOf(neighbor)
+          if (cycleStart >= 0) {
+            cycles.push({ cycle: [...path.slice(cycleStart), neighbor] })
+          }
+        }
+      }
+      path.pop()
+      recStack.delete(node)
+    }
+
+    for (const n of graph.nodes) {
+      if (!visited.has(n.name)) dfs(n.name)
+    }
+
+    return cycles
   }
 }
 

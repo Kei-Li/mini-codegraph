@@ -336,8 +336,25 @@ export class MiniCodeGraph {
 
   async initWorkspace(workspaceRoot: string): Promise<{ symbolsAdded: number; refsAdded: number }> {
     const { WorkspaceSync } = await import('./workspace/sync.js')
-    const sync = new WorkspaceSync(this.queries, workspaceRoot, this.projectRoot)
+    const serviceName = this.projectRoot.split(/[/\\]/).filter(Boolean).pop() || 'default'
+    const sync = new WorkspaceSync(this.queries, workspaceRoot, serviceName)
     return sync.refresh()
+  }
+
+  getServiceConsumers(serviceName: string): { service: string; refs: { symbolId: string; referenceType: string; sourceLocation: string }[] }[] {
+    return this.graphManager.getServiceConsumers(serviceName)
+  }
+
+  getServiceDependencies(serviceName: string): { service: string; refs: { symbolId: string; referenceType: string }[] }[] {
+    return this.graphManager.getServiceDependencies(serviceName)
+  }
+
+  getServiceDependencyGraph(): { nodes: { name: string; provides: number }[]; edges: { from: string; to: string; types: string[] }[] } {
+    return this.graphManager.getServiceDependencyGraph()
+  }
+
+  findWorkspaceCircularDeps(): { cycle: string[] }[] {
+    return this.graphManager.findWorkspaceCircularDeps()
   }
 
   close(): void {

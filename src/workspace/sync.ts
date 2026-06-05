@@ -6,6 +6,7 @@ import { WorkspaceGraphBuilder } from './graph-builder.js'
 import { WorkspaceScanner, type ScannedProject } from './scanner.js'
 import { frameworkExtractor, type ExtractionOutput } from './extractors/frameworks.js'
 import { SpringCloudExtractor } from './extractors/spring-cloud.js'
+import { GatewayExtractor } from './extractors/gateway.js'
 import { RabbitMQExtractor } from './extractors/rabbitmq.js'
 import { RedisExtractor } from './extractors/redis.js'
 import { DatabaseExtractor } from './extractors/database.js'
@@ -26,6 +27,7 @@ export class WorkspaceSync {
     this.currentService = currentService
 
     frameworkExtractor.register(new SpringCloudExtractor())
+    frameworkExtractor.register(new GatewayExtractor())
     frameworkExtractor.register(new RabbitMQExtractor())
     frameworkExtractor.register(new RedisExtractor())
     frameworkExtractor.register(new DatabaseExtractor())
@@ -63,7 +65,7 @@ export class WorkspaceSync {
     onProgress?.(`Found ${this.projects.length} projects`)
 
     const allProvides = new Map<string, ExtractionOutput['provides']>()
-    let currentConsumes: ExtractionOutput['consumes'] = []
+    const allConsumes = new Map<string, ExtractionOutput['consumes']>()
 
     for (const project of this.projects) {
       if (!this.hasProjectChanged(project)) {
@@ -74,20 +76,24 @@ export class WorkspaceSync {
       onProgress?.(`Extracting interfaces from ${project.name}`)
       const results = await frameworkExtractor.extractAll(project.rootPath, this.queries)
 
-      if (project.name === this.currentService) {
-        for (const [, output] of results) {
-          currentConsumes.push(...output.consumes)
-        }
-      }
-
+      const projectConsumes: ExtractionOutput['consumes'] = []
       for (const [, output] of results) {
+        projectConsumes.push(...output.consumes)
         const existing = allProvides.get(project.name) || []
         allProvides.set(project.name, [...existing, ...output.provides])
       }
+      allConsumes.set(project.name, projectConsumes)
     }
 
     onProgress?.('Building global graph...')
-    await this.graphBuilder.refreshExternalTables(allProvides, currentConsumes)
+    this.graphBuilder.setCurrentService(this.currentService)
+    const servicesToBuild = allConsumes.has(this.currentService)
+      ? [this.currentService]
+      : [...allConsumes.keys()]
+    for (const svc of servicesToBuild) {
+      this.graphBuilder.setCurrentService(svc)
+      await this.graphBuilder.refreshExternalTables(allProvides, allConsumes.get(svc) || [])
+    }
 
     const stats = this.queries['db'].prepare('SELECT COUNT(*) as count FROM external_symbols').get() as any
     const refStats = this.queries['db'].prepare('SELECT COUNT(*) as count FROM external_references').get() as any
