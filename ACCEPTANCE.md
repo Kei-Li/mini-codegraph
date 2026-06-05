@@ -13,12 +13,12 @@
 
 | # | 检查项 | 参考文件 | 验收标准 |
 |---|--------|----------|----------|
-| 1.1 | `src/core/parser/` 路径存在 | `src/core/parser/` | index.ts + languages/ 目录 |
-| 1.2 | `src/core/store/` 路径存在 | `src/core/store/` | connection.ts, schema.ts, queries.ts |
-| 1.3 | `src/core/watcher/` 路径存在 | `src/core/watcher/` | index.ts |
-| 1.4 | `src/core/indexer/` 路径存在 | `src/core/indexer/` | full-index.ts, incremental.ts, worker-pool.ts |
-| 1.5 | `src/workspace/extractors/` 全部5个 | workspace/extractors/ | spring-cloud, rabbitmq, redis, database, frontend |
-| 1.6 | `src/mcp/handlers/` >= 7个 | mcp/handlers/ | explore, search, callers, callees, impact, node, files |
+| 1.1 | `src/db/` 路径存在 | `src/db/` | connection.ts, schema.ts, queries.ts |
+| 1.2 | `src/extraction/` 路径存在 | `src/extraction/` | orchestrator.ts, languages/, extractors... |
+| 1.3 | `src/sync/` 路径存在 | `src/sync/` | watcher.ts, git-sync.ts |
+| 1.4 | `src/graph/` 路径存在 | `src/graph/` | queries.ts, traversal.ts |
+| 1.5 | `src/workspace/extractors/` 全部6个 | workspace/extractors/ | spring-cloud, gateway, rabbitmq, redis, database, frontend |
+| 1.6 | `src/mcp/tools.ts` 注册工具 >= 18个 | mcp/tools.ts | 所有 mini_cg_* 工具已注册 |
 
 ### 2. 数据库 Schema（Design §5）
 
@@ -35,15 +35,10 @@
 
 | # | 工具名 | 注册状态 | handler 文件 |
 |---|--------|----------|-------------|
-| 3.1 | mini_cg_explore | tools.ts 中注册 | handlers/explore.ts |
-| 3.2 | mini_cg_search | tools.ts 中注册 | handlers/search.ts |
-| 3.3 | mini_cg_callers | tools.ts 中注册 | handlers/callers.ts |
-| 3.4 | mini_cg_callees | tools.ts 中注册 | handlers/callees.ts |
-| 3.5 | mini_cg_impact | tools.ts 中注册 | handlers/impact.ts |
-| 3.6 | mini_cg_node | tools.ts 中注册 | handlers/node.ts |
-| 3.7 | mini_cg_files | tools.ts 中注册 | handlers/files.ts |
-| 3.8 | **mini_cg_workspace_status** | **必须在 tools.ts 中注册** | handlers/workspace-status.ts |
-| 3.9 | server instructions 提及 workspace_status | server.ts initialize | 第111行包含 |
+| 3.1-3.21 | 全部21个 mini_cg_* 工具 | tools.ts 中注册 | 必须全部注册,见 §3.10 |
+| 3.8 | **mini_cg_workspace_status** | **tools.ts 中必须注册** | (由 createWorkspaceStatusHandler 创建) |
+| 3.9 | server instructions 提及 workspace_status | server.ts initialize | 须在 instructions 中提及 |
+| 3.10 | 工具清单 | tools.ts createTools() | search, context, trace, callers, callees, node, impact, files, status, explore, architecture, feign, mybatis, modules, react, mongo, redis, sql, workspace_status, dispatch, config |
 
 **关键规则**: 所有在 server.ts instructions 中提及的工具，必须在 tools.ts 中实际注册。缺失注册 = FAIL。
 
@@ -51,18 +46,19 @@
 
 | # | 提取器 | 必须覆盖的功能 |
 |---|--------|---------------|
-| 4.1 | SpringCloud | `@RequestMapping`(提供), `@FeignClient`(消费), `RestTemplate`(消费), Gateway(消费) |
-| 4.2 | RabbitMQ | `@RabbitListener`(消费), **`rabbitTemplate.convertAndSend`(生产)**, YAML bindings |
-| 4.3 | Database | JPA `@Table`(提供), MyBatis(消费), MongoDB `@Document`(提供) |
-| 4.4 | Frontend | axios/fetch URL(消费), 后端路由匹配(提供) |
-| 4.5 | Redis | `@Cacheable`(提供), redisTemplate 操作(消费) |
+| 4.0 | Gateway | RouteLocatorBuilder DSL(提供), YAML routes(提供), lb:// URI(消费) |
+| 4.1 | SpringCloud | `@RequestMapping`(提供), `@FeignClient`(消费), RestTemplate(消费), Gateway(消费) |
+| 4.2 | RabbitMQ | `@RabbitListener`(消费), **`convertAndSend`/`convertSendAndReceive`(生产)**, YAML bindings |
+| 4.3 | Database | JPA `@Entity`(提供), MyBatis(消费), MongoDB `@Document`(提供) |
+| 4.4 | Frontend | axios/fetch URL(消费), Vue api_mapping 边(消费) |
+| 4.5 | Redis | `@Cacheable`/`@CachePut`/`@CacheEvit`/`@Caching`(提供), redisTemplate 操作(消费) |
 
 ### 5. 工作区层（Design §6）
 
 | # | 检查项 | 验收标准 |
 |---|--------|---------|
 | 5.1 | WorkspaceScanner 标记检测 | pom.xml, build.gradle, package.json, .git, requirements.txt, Cargo.toml, go.mod |
-| 5.2 | WorkspaceSync 注册提取器 | 全部5个在构造函数中注册 |
+| 5.2 | WorkspaceSync 注册提取器 | 全部6个在构造函数中注册 (spring-cloud, gateway, rabbitmq, redis, database, frontend) |
 | 5.3 | WorkspaceSync hash 缓存 | hasProjectChanged() 跳过未变更项目 |
 | 5.4 | **WorkspaceGraphBuilder 增量更新** | **必须差异更新，禁止整表重建** |
 | 5.5 | 查询合并（Design §6.4 UNION ALL） | **3个分支必须齐全**: 内部调用 + 消费外部 + 外部调用本服务 |

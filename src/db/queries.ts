@@ -451,6 +451,21 @@ export class QueryManager {
     }))
   }
 
+  updateExternalSymbol(id: string, name: string, kind: string, providingService: string, signature: string): void {
+    const stmt = this.db.prepare(Q.UPDATE_EXTERNAL_SYMBOL)
+    stmt.run(name, kind, providingService, signature, id)
+  }
+
+  deleteExternalSymbol(id: string): void {
+    const stmt = this.db.prepare(Q.DELETE_EXTERNAL_SYMBOL_BY_ID)
+    stmt.run(id)
+  }
+
+  deleteExternalReference(id: number): void {
+    const stmt = this.db.prepare(Q.DELETE_EXTERNAL_REFERENCE_BY_ID)
+    stmt.run(id)
+  }
+
   getExternalReferencesBySource(sourceName: string): { id: string; symbolName: string; serviceName?: string; detail?: string; sourceSymbol: string }[] {
     const stmt = this.db.prepare(Q.GET_EXTERNAL_REFS_BY_SOURCE_NAME)
     const rows = stmt.all(`%${sourceName}%`) as Record<string, any>[]

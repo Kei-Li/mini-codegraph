@@ -301,4 +301,7 @@ export const GET_EXTERNAL_REFS_BY_SOURCE_NAME = "SELECT r.*, s.name as symbol_na
 export const GET_ALL_EXTERNAL_SYMBOLS = "SELECT * FROM external_symbols"
 export const GET_ALL_EXTERNAL_REFERENCES = "SELECT * FROM external_references"
 export const DELETE_EXTERNAL_SYMBOLS_BY_SERVICE = "DELETE FROM external_symbols WHERE providing_service = ?"
+export const UPDATE_EXTERNAL_SYMBOL = "UPDATE external_symbols SET name=?, kind=?, providing_service=?, signature=? WHERE id=?"
+export const DELETE_EXTERNAL_SYMBOL_BY_ID = "DELETE FROM external_symbols WHERE id=?"
+export const DELETE_EXTERNAL_REFERENCE_BY_ID = "DELETE FROM external_references WHERE id=?"
 export const DELETE_EXTERNAL_REFS_BY_SERVICE = "DELETE FROM external_references WHERE target_service = ? OR external_symbol_id IN (SELECT id FROM external_symbols WHERE providing_service = ?)"

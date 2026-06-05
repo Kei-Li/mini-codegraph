@@ -11,6 +11,7 @@ import { RabbitMQExtractor } from './extractors/rabbitmq.js'
 import { RedisExtractor } from './extractors/redis.js'
 import { DatabaseExtractor } from './extractors/database.js'
 import { FrontendExtractor } from './extractors/frontend.js'
+import { getGitChangedFiles } from '../utils.js'
 
 export class WorkspaceSync {
   private scanner: WorkspaceScanner
@@ -44,6 +45,13 @@ export class WorkspaceSync {
   }
 
   private hasProjectChanged(project: ScannedProject): boolean {
+    // 1. Check git changes (fast path for source-level changes)
+    const gitChanges = getGitChangedFiles(project.rootPath)
+    if (gitChanges && (gitChanges.modified.length > 0 || gitChanges.added.length > 0 || gitChanges.deleted.length > 0)) {
+      return true
+    }
+
+    // 2. Check config file hashes (pom.xml, build.gradle, etc.)
     const configFiles = ['pom.xml', 'build.gradle', 'package.json', 'application.yml', 'application.yaml', 'bootstrap.yml']
     for (const cf of configFiles) {
       const fp = join(project.rootPath, cf)
@@ -57,6 +65,7 @@ export class WorkspaceSync {
         }
       }
     }
+
     return false
   }
 

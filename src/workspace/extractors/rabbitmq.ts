@@ -27,28 +27,43 @@ export class RabbitMQExtractor implements IExtractor {
       }
     }
 
-    const convertAndSendNodes = queries.getNodesByAnnotation('ConvertAndSend')
-    if (convertAndSendNodes.length === 0) {
-      const allNodes = queries.getAllNodes()
-      for (const node of allNodes) {
-        if (node.qualifiedName.includes('convertAndSend') || node.name === 'convertAndSend') {
-          const anns = queries.getAnnotationsByNode(node.id)
-          const exchange = anns.find(a => a.annotationName === 'exchange')?.value || ''
-          const routingKey = anns.find(a => a.annotationName === 'routingKey')?.value || ''
-          const topic = exchange || routingKey || node.qualifiedName
-          const parent = node.parentId ? queries.getNode(node.parentId) : null
-          consumes.push({
-            symbolId: `mq.rabbitmq.producer.${topic}`,
-            referenceType: 'mq_publish',
-            sourceLocation: `${node.filePath}:${node.startLine}:${node.startColumn}`,
-          })
-          provides.push({
-            id: `mq.rabbitmq.producer.${topic}`,
-            name: topic,
-            kind: 'mq_exchange',
-            signature: `exchange:${exchange}, routingKey:${routingKey}`,
-          })
-        }
+    // Parse convertAndSend / convertSendAndReceive calls from Java source files
+    const allNodes = queries.getAllNodes()
+    const seenExchanges = new Set<string>()
+    for (const node of allNodes) {
+      if (node.name === 'convertAndSend' || node.name === 'convertSendAndReceive' ||
+          (node.qualifiedName && node.qualifiedName.includes('RabbitTemplate.convertAndSend'))) {
+        // Read source to extract exchange/routingKey arguments
+        const fullPath = join(projectRoot, node.filePath)
+        try {
+          const source = readFileSync(fullPath, 'utf-8')
+          const lines = source.split('\n')
+          for (let i = node.startLine - 1; i < Math.min(node.startLine + 1, lines.length); i++) {
+            const line = lines[i]
+            const callMatch = line.match(/convertAndSend\s*\(\s*["']([^"']+)["']\s*,\s*["']([^"']+)["']/)
+              ?? line.match(/convertSendAndReceive\s*\(\s*["']([^"']+)["']\s*,\s*["']([^"']+)["']/)
+            if (callMatch) {
+              const exchange = callMatch[1]
+              const routingKey = callMatch[2]
+              const topic = `${exchange}.${routingKey}`
+              if (!seenExchanges.has(topic)) {
+                seenExchanges.add(topic)
+                consumes.push({
+                  symbolId: `mq.rabbitmq.producer.${topic}`,
+                  referenceType: 'mq_publish',
+                  sourceLocation: `${node.filePath}:${node.startLine}:${node.startColumn}`,
+                })
+                provides.push({
+                  id: `mq.rabbitmq.producer.${topic}`,
+                  name: topic,
+                  kind: 'mq_exchange',
+                  signature: `exchange:${exchange}, routingKey:${routingKey}`,
+                })
+              }
+              break
+            }
+          }
+        } catch { /* silent */ }
       }
     }
 

@@ -50,54 +50,60 @@ export class GraphQueryManager {
 
   getCallersWithExternal(nodeId: string): { node: MiniCodeGraphNode; provenance: string }[] {
     const internal = this.queries.getCallers(nodeId).map(n => ({ node: n, provenance: 'internal' as const }))
-    const external = this.queries.getExternalReferencesByTarget(nodeId)
-      .map(ref => ({
-      node: {
-        id: ref.id,
-        kind: 'external_reference',
-        name: ref.symbolName,
-        qualifiedName: ref.serviceName ? `${ref.serviceName}.${ref.symbolName}` : ref.symbolName,
-        filePath: `external://${ref.serviceName ?? 'unknown'}`,
-        startLine: 0,
-        endLine: 0,
-        startColumn: 0,
-        endColumn: 0,
-        language: '',
-        docstring: ref.detail ?? '',
-        signature: ref.detail ?? '',
-        visibility: 'public',
-        isExported: true,
-        parentId: null,
-      },
-      provenance: `external:${ref.serviceName ?? 'unknown'}`,
-    }))
     const node = this.queries.getNode(nodeId)
-    if (node) {
-      const externalCallersFromOtherServices = this.queries.getExternalReferencesBySource(node.name)
-        .filter(ref => ref.serviceName && ref.serviceName !== this.projectRoot)
-        .map(ref => ({
-          node: {
-            id: ref.id,
-            kind: 'external_reference',
-            name: ref.symbolName,
-            qualifiedName: `${ref.serviceName ?? 'unknown'}.${ref.symbolName}`,
-            filePath: `external://${ref.serviceName ?? 'unknown'}`,
-            startLine: 0,
-            endLine: 0,
-            startColumn: 0,
-            endColumn: 0,
-            language: '',
-            docstring: ref.detail ?? '',
-            signature: ref.detail ?? '',
-            visibility: 'public',
-            isExported: true,
-            parentId: null,
-          },
-          provenance: `external_from:${ref.serviceName ?? 'unknown'}`,
-        }))
-      return [...internal, ...external, ...externalCallersFromOtherServices]
-    }
-    return [...internal, ...external]
+    if (!node) return internal
+
+    // External callers from OTHER services calling INTO this node (e.g., ServiceA calling ServiceB's endpoint)
+    // We match by: the external_symbol's name or id contains this node's name
+    const externalSymbolName = node.name
+    const external = this.queries.getExternalReferencesByTarget(externalSymbolName)
+      .map(ref => ({
+        node: {
+          id: ref.id,
+          kind: 'external_reference',
+          name: ref.symbolName,
+          qualifiedName: ref.serviceName ? `${ref.serviceName}.${ref.symbolName}` : ref.symbolName,
+          filePath: `external://${ref.serviceName ?? 'unknown'}`,
+          startLine: 0,
+          endLine: 0,
+          startColumn: 0,
+          endColumn: 0,
+          language: '',
+          docstring: ref.detail ?? '',
+          signature: ref.detail ?? '',
+          visibility: 'public',
+          isExported: true,
+          parentId: null,
+        },
+        provenance: `external:${ref.serviceName ?? 'unknown'}`,
+      }))
+
+    // External references from THIS service's code consuming external symbols
+    // (e.g., RestTemplate calls, Feign calls, RabbitMQ publishes)
+    const externalConsumed = this.queries.getExternalReferencesBySource(externalSymbolName)
+      .filter(ref => ref.serviceName && ref.serviceName !== this.projectRoot)
+      .map(ref => ({
+        node: {
+          id: ref.id,
+          kind: 'external_reference',
+          name: ref.symbolName,
+          qualifiedName: `${ref.serviceName ?? 'unknown'}.${ref.symbolName}`,
+          filePath: `external://${ref.serviceName ?? 'unknown'}`,
+          startLine: 0,
+          endLine: 0,
+          startColumn: 0,
+          endColumn: 0,
+          language: '',
+          docstring: ref.detail ?? '',
+          signature: ref.detail ?? '',
+          visibility: 'public',
+          isExported: true,
+          parentId: null,
+        },
+        provenance: `external_from:${ref.serviceName ?? 'unknown'}`,
+      }))
+
+    return [...internal, ...external, ...externalConsumed]
   }
 
   getCalleesWithExternal(nodeId: string): { node: MiniCodeGraphNode; provenance: string }[] {

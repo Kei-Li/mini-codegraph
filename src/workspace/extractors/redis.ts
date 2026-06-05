@@ -8,21 +8,34 @@ export class RedisExtractor implements IExtractor {
     const provides: ExtractionOutput['provides'] = []
     const consumes: ExtractionOutput['consumes'] = []
 
-    const cacheNodes = queries.getNodesByAnnotation('Cacheable')
-    for (const node of cacheNodes) {
-      const anns = queries.getAnnotationsByNode(node.id)
-      for (const a of anns) {
-        if (a.annotationName === 'Cacheable') {
-          const cacheNames = a.value.match(/cacheNames\s*=\s*\{([^}]+)\}/) || a.value.match(/value\s*=\s*\{([^}]+)\}/)
-          if (cacheNames) {
-            const names = cacheNames[1].split(',').map(s => s.trim().replace(/["']/g, '')).filter(Boolean)
-            for (const name of names) {
-              provides.push({
-                id: `cache.redis.${name}`,
-                name,
-                kind: 'cache_key',
-                signature: `cache:${name}`,
-              })
+    const cacheAnnotationNames = ['Cacheable', 'CachePut', 'CacheEvict', 'Caching']
+    for (const annName of cacheAnnotationNames) {
+      const cacheNodes = queries.getNodesByAnnotation(annName)
+      for (const node of cacheNodes) {
+        const anns = queries.getAnnotationsByNode(node.id)
+        for (const a of anns) {
+          if (a.annotationName === 'Caching') {
+            const cacheableMatch = a.value.match(/cacheable\s*=\s*\{@Cacheable\(([^)]+)/)
+            if (cacheableMatch) {
+              const names = cacheableMatch[1].match(/value\s*=\s*\{([^}]+)\}/) || cacheableMatch[1].match(/cacheNames\s*=\s*\{([^}]+)\}/)
+              if (names) {
+                for (const n of names[1].split(',').map(s => s.trim().replace(/["']/g, '')).filter(Boolean)) {
+                  provides.push({ id: `cache.redis.${n}`, name: n, kind: 'cache_key', signature: `cache:${n}` })
+                }
+              }
+            }
+          } else if (a.annotationName === annName) {
+            const cacheNames = a.value.match(/cacheNames\s*=\s*\{([^}]+)\}/) || a.value.match(/value\s*=\s*\{([^}]+)\}/)
+            if (cacheNames) {
+              const names = cacheNames[1].split(',').map(s => s.trim().replace(/["']/g, '')).filter(Boolean)
+              for (const name of names) {
+                provides.push({
+                  id: `cache.redis.${name}`,
+                  name,
+                  kind: 'cache_key',
+                  signature: `cache:${name}`,
+                })
+              }
             }
           }
         }

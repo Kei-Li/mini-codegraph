@@ -1,6 +1,0 @@
-export { javaConfig, isJavaFile } from './java.js'
-export { typescriptConfig, isTypeScriptFile } from './typescript.js'
-export { kotlinConfig, isKotlinFile } from './kotlin.js'
-export { pythonConfig, isPythonFile } from './python.js'
-export { vueConfig, isVueFile } from './vue.js'
-export type { LanguageConfig } from './java.js'

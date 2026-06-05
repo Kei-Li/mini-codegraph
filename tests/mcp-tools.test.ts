@@ -7,6 +7,8 @@ function createMockGraph(overrides: Partial<GraphQueryManager> = {}): GraphQuery
     search: vi.fn().mockReturnValue([]),
     getCallers: vi.fn().mockReturnValue([]),
     getCallees: vi.fn().mockReturnValue([]),
+    getCallersWithExternal: vi.fn().mockReturnValue([]),
+    getCalleesWithExternal: vi.fn().mockReturnValue([]),
     getContext: vi.fn().mockReturnValue({ callers: [], callees: [] }),
     getImpact: vi.fn().mockReturnValue([]),
     findPath: vi.fn().mockReturnValue({ paths: [], truncated: false, exploredNodes: 0 }),
@@ -171,9 +173,9 @@ describe('MCP tools', () => {
     it('returns callers for symbol', async () => {
       const graph = createMockGraph({
         search: vi.fn().mockReturnValue([{ node: { id: '1', name: 'foo', kind: 'function' }, snippets: [], score: 1 }]),
-        getCallers: vi.fn().mockReturnValue([
-          { id: '2', name: 'caller1', kind: 'function', filePath: 'a.ts', startLine: 10, endLine: 20 },
-          { id: '3', name: 'caller2', kind: 'method', filePath: 'b.ts', startLine: 5, endLine: 15 },
+        getCallersWithExternal: vi.fn().mockReturnValue([
+          { node: { id: '2', name: 'caller1', kind: 'function', filePath: 'a.ts', startLine: 10, endLine: 20 }, provenance: 'internal' },
+          { node: { id: '3', name: 'caller2', kind: 'method', filePath: 'b.ts', startLine: 5, endLine: 15 }, provenance: 'internal' },
         ]),
       })
       const tools = createTools(graph)

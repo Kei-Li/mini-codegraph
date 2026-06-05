@@ -881,12 +881,20 @@ export function storeWebClientReferences(projectRoot: string, queries: QueryMana
   for (const route of routes) {
     const url = route.path
     const svcMatch = url.match(/^https?:\/\/([^/]+)/)
-    if (!svcMatch) continue
-    const targetService = svcMatch[1]
-    const symbolId = `http.webclient.${targetService}${route.path.replace(/[^a-zA-Z0-9/_-]/g, '_')}`
-    queries.insertExternalSymbol(symbolId, route.path, 'http_endpoint', targetService, route.handlerFile, `WebClient ${route.method} ${route.path}`, '{}')
-    queries.insertExternalReference(`${route.handlerFile}:${route.handlerLine}`, symbolId, 'http_request', targetService, JSON.stringify({ method: route.method, url: route.path }), serviceName)
-    count++
+    if (svcMatch) {
+      const targetService = svcMatch[1]
+      const symbolId = `http.webclient.${targetService}${route.path.replace(/[^a-zA-Z0-9/_-]/g, '_')}`
+      queries.insertExternalSymbol(symbolId, route.path, 'http_endpoint', targetService, route.handlerFile, `WebClient ${route.method} ${route.path}`, '{}')
+      queries.insertExternalReference(`${route.handlerFile}:${route.handlerLine}`, symbolId, 'http_request', targetService, JSON.stringify({ method: route.method, url: route.path }), serviceName)
+      count++
+    } else {
+      // Relative URI — persist with the current service as target for cross-module traceability
+      const pathKey = url.replace(/[^a-zA-Z0-9/_-]/g, '_')
+      const symbolId = `http.webclient.local.${pathKey}`
+      queries.insertExternalSymbol(symbolId, url, 'http_endpoint', serviceName, route.handlerFile, `WebClient ${route.method} ${url}`, '{}')
+      queries.insertExternalReference(`${route.handlerFile}:${route.handlerLine}`, symbolId, 'http_request', serviceName, JSON.stringify({ method: route.method, url, relative: true }), serviceName)
+      count++
+    }
   }
   return count
 }

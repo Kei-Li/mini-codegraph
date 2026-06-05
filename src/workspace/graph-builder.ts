@@ -103,7 +103,11 @@ export class WorkspaceGraphBuilder {
                 bestIdx = i
               }
             }
-            matchedSymbol = bestScore >= 0 ? candidates[bestIdx] : candidates[0]
+            // Require minimum score to avoid false positives:
+            // need at least kind match (10) AND at least one name/id overlap (>=15 total)
+            if (bestScore >= 15) {
+              matchedSymbol = candidates[bestIdx]
+            }
           }
         }
       }
@@ -149,9 +153,7 @@ export class WorkspaceGraphBuilder {
       const existing = existingSymbolMap.get(sym.id)
       if (!existing || existing.signature !== sym.signature || existing.kind !== sym.kind) {
         if (existing) {
-          this.queries.getDb().exec(
-            `UPDATE external_symbols SET name='${sym.name.replace(/'/g, "''")}', kind='${sym.kind.replace(/'/g, "''")}', providing_service='${sym.providingService.replace(/'/g, "''")}', signature='${(sym.signature ?? '').replace(/'/g, "''")}' WHERE id='${sym.id.replace(/'/g, "''")}'`
-          )
+          this.queries.updateExternalSymbol(sym.id, sym.name, sym.kind, sym.providingService, sym.signature ?? '')
         } else {
           this.queries.insertExternalSymbol(sym.id, sym.name, sym.kind, sym.providingService, sym.definitionFile, sym.signature, sym.metadata)
         }
@@ -160,7 +162,7 @@ export class WorkspaceGraphBuilder {
 
     for (const esym of existingSymbols) {
       if (esym.serviceName === this.currentService && !newSymbolMap.has(esym.id)) {
-        this.queries.getDb().exec(`DELETE FROM external_symbols WHERE id = '${esym.id.replace(/'/g, "''")}'`)
+        this.queries.deleteExternalSymbol(esym.id)
       }
     }
 
@@ -175,9 +177,7 @@ export class WorkspaceGraphBuilder {
     for (const existing of existingRefs) {
       const refKey = `${existing.symbolName}:${existing.sourceLocation}:${existing.serviceName ?? ''}`
       if ((existing.sourceService === this.currentService) && !newRefKeySet.has(refKey)) {
-        this.queries.getDb().exec(
-          `DELETE FROM external_references WHERE id = ${existing.id}`
-        )
+        this.queries.deleteExternalReference(existing.id as unknown as number)
       }
     }
   }

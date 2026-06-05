@@ -234,13 +234,14 @@ export function createTools(
         if (!symbol) return { symbol, callers: [], total: 0, truncated: false }
         const results = graph.search(symbol, 5)
 
-        const allCallers = graph.getCallers(results[0].node.id)
+        const allCallers = graph.getCallersWithExternal(results[0].node.id)
         const p = paginate(allCallers, rawLimit, rawOffset)
         return {
           symbol,
           callers: p.items.map(c => ({
-            id: c.id, name: c.name, kind: c.kind,
-            filePath: c.filePath, lines: `${c.startLine}-${c.endLine}`,
+            id: c.node.id, name: c.node.name, kind: c.node.kind,
+            filePath: c.node.filePath, lines: `${c.node.startLine}-${c.node.endLine}`,
+            provenance: c.provenance,
           })),
           total: p.total, truncated: p.truncated,
         }
@@ -264,13 +265,14 @@ export function createTools(
         if (!symbol) return { symbol, callees: [], total: 0, truncated: false }
         const results = graph.search(symbol, 5)
 
-        const allCallees = graph.getCallees(results[0].node.id)
+        const allCallees = graph.getCalleesWithExternal(results[0].node.id)
         const p = paginate(allCallees, rawLimit, rawOffset)
         return {
           symbol,
           callees: p.items.map(c => ({
-            id: c.id, name: c.name, kind: c.kind,
-            filePath: c.filePath, lines: `${c.startLine}-${c.endLine}`,
+            id: c.node.id, name: c.node.name, kind: c.node.kind,
+            filePath: c.node.filePath, lines: `${c.node.startLine}-${c.node.endLine}`,
+            provenance: c.provenance,
           })),
           total: p.total, truncated: p.truncated,
         }

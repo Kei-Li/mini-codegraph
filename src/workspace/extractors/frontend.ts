@@ -21,22 +21,6 @@ export class FrontendExtractor implements IExtractor {
       } catch { /* silent */ }
     }
 
-    const routeNodes = queries.getNodesByAnnotation('RequestMapping')
-    for (const node of routeNodes) {
-      const anns = queries.getAnnotationsByNode(node.id)
-      for (const a of anns) {
-        if (['RequestMapping', 'GetMapping', 'PostMapping', 'PutMapping', 'DeleteMapping'].includes(a.annotationName)) {
-          const method = a.annotationName === 'RequestMapping' ? 'ANY' : a.annotationName.replace('Mapping', '').toUpperCase()
-          provides.push({
-            id: `http.route.${method}.${a.value}`,
-            name: node.name,
-            kind: 'http_endpoint',
-            signature: `${method} ${a.value}`,
-          })
-        }
-      }
-    }
-
     return { provides, consumes }
   }
 }

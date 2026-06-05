@@ -228,6 +228,17 @@ export class ExtractionOrchestrator {
       process.stderr.write(`  Dispatch inference skipped: ${e}\n`)
     }
 
+    process.stderr.write('Indexing Spring beans (@Service/@Component/@Repository/@Autowired)...\n')
+    try {
+      const { indexSpringBeans } = await import('./spring-bean-extractor.js')
+      const beanResult = indexSpringBeans(this.queries, mid)
+      if (beanResult.beans > 0 || beanResult.injections > 0) {
+        process.stderr.write(`  Found ${beanResult.beans} stereotype beans, ${beanResult.injections} @Autowired injection edges\n`)
+      }
+    } catch (e) {
+      process.stderr.write(`  Spring bean extraction skipped: ${e}\n`)
+    }
+
     process.stderr.write('Indexing OpenAPI contracts...\n')
     const openApiEndpoints = indexOpenApiContracts(this.queries, projectRoot, mid)
     if (openApiEndpoints.length > 0) {
