@@ -100,3 +100,35 @@ export function indexJpaEntities(
 
   return entities
 }
+
+/**
+ * Detect Spring Data REST endpoints (@RepositoryRestResource) and persist as external symbols.
+ */
+export function indexRepositoryRestEndpoints(queries: QueryManager, moduleId: string): number {
+  const repoNodes = queries.getNodesByAnnotation('RepositoryRestResource')
+  let count = 0
+  for (const node of repoNodes) {
+    const anns = queries.getAnnotationsByNode(node.id)
+    for (const a of anns) {
+      if (a.annotationName === 'RepositoryRestResource') {
+        let path = ''
+        try { path = JSON.parse(a.value).path || node.name.toLowerCase().replace('repository', '') } catch { path = node.name.toLowerCase().replace('repository', '') }
+        const basePath = path.startsWith('/') ? path : `/${path}`
+        const crudEndpoints = [
+          { method: 'GET', path: basePath },
+          { method: 'GET', path: `${basePath}/{id}` },
+          { method: 'POST', path: basePath },
+          { method: 'PUT', path: `${basePath}/{id}` },
+          { method: 'PATCH', path: `${basePath}/{id}` },
+          { method: 'DELETE', path: `${basePath}/{id}` },
+        ]
+        for (const ep of crudEndpoints) {
+          const symbolId = `data-rest.${moduleId}${ep.path}.${ep.method}`
+          queries.insertExternalSymbol(symbolId, node.name, 'http_endpoint', moduleId, node.filePath, `${ep.method} ${ep.path}`, '{}')
+          count++
+        }
+      }
+    }
+  }
+  return count
+}

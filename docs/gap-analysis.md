@@ -46,8 +46,8 @@
 | # | 差距 | 设计文档要求 | 现状 | 影响 |
 |---|---|---|---|---|
 | 6 | **Groovy 支持** | §7.1: 正则 + AST 片段 | ❌ 未实现 | Gradle 脚本和 Spock 测试无法索引 |
-| 7 | **RestTemplate 未持久化** | §8.1: 检测 `http://SERVICE/path` | ✅ 已检测但未持久化 | `detectRestTemplateCalls()` 仅暴露在 `getRoutes()` API, 不写入 `external_references` 表, `mini_cg_callers/impact` 不可见 |
-| 8 | **Feign 方法级仅限 workspace 模式** | 需提取 @FeignClient 接口方法 | ✅ 已实现但仅限 `--workspace` 模式 | 单项目模式 (`init` + `index` 不带 `--workspace`) 不会触发 `SpringCloudExtractor`, 方法级 Feign 关系丢失 |
+| 7 | **RestTemplate 未持久化** | §8.1: 检测 `http://SERVICE/path` | ✅ 已修复 | `storeRestTemplateReferences()` 写入 `external_references` 表, 纳入 `mini_cg_callers/impact` 查询 |
+| 8 | **Feign 方法级仅限 workspace 模式** | 需提取 @FeignClient 接口方法 | ✅ 已修复 | `storeFeignMethodReferences()` 在 `indexProject()` 后处理阶段运行, 单项目模式也可用 |
 | 9 | **bootstrap.yml 服务名提取** | §8.1: 解析 `spring.application.name` | ✅ 已实现 | `cloud-config-extractor.ts` 中 `detectBootstrapConfig()` 存在 |
 | 10 | **多实例文件锁** | §12.5: `.mini-codegraph/.lock` | ✅ 已实现 | `utils.ts:FileLock`, `index.ts:172` 在 `sync()` 中使用 |
 | 11 | **超大文件跳过** | §9.2: >1MB 文件跳过 | ✅ 已实现 | `orchestrator.ts:503`
@@ -56,10 +56,12 @@
 
 | # | 差距 | 说明 | 影响 |
 |---|---|---|---|
-| 12 | **Spring WebFlux / 函数式端点** | `RouterFunction`, `ServerRequest`, `HandlerFunction` 未检测 | 使用 WebFlux 的 Spring Boot 项目路由不可见 |
-| 13 | **Spring Boot Actuator** | `/actuator/health`, `/actuator/metrics` 等端点未识别 | Agent 无法知道 Actuator 暴露了哪些端点 |
-| 14 | **Spring Data REST** | `@RepositoryRestResource` 自动暴露的 REST 端点未检测 | Spring Data REST 仓库自动生成的路由不可见 |
-| 15 | **Spring Cloud Stream binder 检测** | 虽然 `@Input`/`@Output` 已检测, 但不同 binder 实现的区别未记录 | 无法区分 Kafka/RabbitMQ binder |
+| 12 | **Spring WebFlux / 函数式端点** | `RouterFunction`, `ServerRequest`, `HandlerFunction` | ✅ 已修复 | `detectWebFluxRoutes()` 检测 `.route(GET|POST|...("/path"), handler::method)` 模式; `storeWebFluxReferences()` 持久化 |
+| 13 | **Spring Boot Actuator** | `/actuator/health`, `/actuator/metrics` 等端点 | ✅ 已修复 | `indexActuatorEndpoints()` 从 `application.yml/properties` 解析 `management.endpoints.web.exposure.include` |
+| 14 | **Spring Data REST** | `@RepositoryRestResource` 自动 REST 端点 | ✅ 已修复 | `indexRepositoryRestEndpoints()` 检测注解并生成标准 CRUD 端点 |
+| 15 | **Spring Cloud Stream binder 检测** | ⚠️ @Input/@Output 已检测, binder 类型未记录 | 可以区分 Kafka/RabbitMQ binder |
+| 16 | **Spring WebClient** | WebClient 响应式 HTTP 调用未检测 | ✅ 已修复 | `detectWebClientCalls()` 检测 `.get().uri("http://...")` 模式; `storeWebClientReferences()` 持久化 |
+| 17 | **mini_cg_impact 未使用 external_references** | 影响分析遗漏跨服务调用 | ✅ 已修复 | `findImpactedNodes()` 在每个 BFS 步中查询 `external_references` |
 
 ### 🔵 P2: 增强功能, 非必须
 
@@ -160,15 +162,15 @@
 
 #### 场景 2: "order-service 通过 RestTemplate 调用 user-service"
 - 当前能力:
-  - ✅ `detectRestTemplateCalls()` 能检测到 `restTemplate.getForObject("http://user-service/api/users/...")`
-  - ❌ 检测结果未持久化到 DB, `mini_cg_callers` 和 `mini_cg_impact` 看不到 RestTemplate 调用
-- **影响**: RestTemplate 跨服务调用会被遗漏在影响分析之外
+  - ✅ `detectRestTemplateCalls()` 检测到 `restTemplate.getForObject("http://user-service/api/users/...")`
+  - ✅ `storeRestTemplateReferences()` 持久化到 `external_references` 表, `mini_cg_callers/impact` 可见
+- **影响**: RestTemplate 跨服务调用已纳入影响分析
 
 #### 场景 3: "Feign 客户端调用了 user-service 的哪些 API?"
 - 当前能力:
-  - ✅ 在 `--workspace` 模式下: 可提取每个方法 (`getUserById()`) + 路径 (`@GetMapping("/users/{id}")`)
-  - ❌ 在单项目模式 (`init + serve --mcp` 不带 `--workspace`): 仅知道服务级依赖, 无方法级
-- **影响**: 对开发者在本地运行 `mini-codegraph serve --mcp` 而未配置 `--workspace` 时, Feign 只有服务级可见性
+  - ✅ 在 `--workspace` 模式下: 提取每个方法 + 路径
+  - ✅ 在单项目模式: `storeFeignMethodReferences()` 在 `indexProject()` 后处理阶段运行, 写入 `external_references` 表
+- **影响**: Feign 方法级在单项目模式下也可见
 
 #### 场景 4: "Kotlin 写的 Spring Boot 服务"
 - 当前能力: ✅ `kotlin.ts` 使用 tree-sitter 解析, 支持 `class_declaration`/`object_declaration` 以及注解提取。`@Service`/`@RestController`/`@Autowired` 等标准 Spring 注解可被检测。
@@ -186,22 +188,26 @@
 
 ## 四、修复建议优先级
 
-### 第一优先级 (修复后可满足 95%+ 企业场景)
+### 已修复 (本轮)
 
-| 修复项 | 工作量 | 说明 |
-|---|---|---|
-| **RestTemplate 持久化** | ~1天 | 将 `detectRestTemplateCalls()` 检测结果写入 `external_references` 表, 纳入 `mini_cg_callers/impact` 查询 |
-| **Feign 方法级离开 workspace** | ~1天 | 将 `SpringCloudExtractor` 的 Feign 方法提取逻辑纳入单项目索引流程 (orchestrator 后处理阶段) |
-| **Spring WebFlux 端点检测** | ~1.5天 | 检测 `RouterFunction` Bean 中的路由注册 (GET/POST 等 + 路径 + handler 方法) |
-| **Spring Data REST 端点** | ~0.5天 | 检测 `@RepositoryRestResource` 自动暴露的 CRUD 端点 |
-| **Actuator 端点检测** | ~0.5天 | 检测 `application.yml` 中的 `management.endpoints.web.exposure.include` |
+| 修复项 | 工作量 | 说明 | 状态 | 位置 |
+|---|---|---|---|---|
+| **RestTemplate 持久化** | ~1天 | 检测结果写入 `external_references` | ✅ | `routes.ts:storeRestTemplateReferences()` |
+| **Feign 方法级离开 workspace** | ~1天 | 纳入 `indexProject()` 后处理阶段 | ✅ | `routes.ts:storeFeignMethodReferences()` |
+| **Vue→Controller 映射纳入单项目** | ~1天 | 在 `indexProject()` 后处理阶段映射 | ✅ | `orchestrator.ts:383-408` |
+| **mini_cg_impact 使用 external** | ~1天 | `findImpactedNodes()` 增加 external 遍历 | ✅ | `traversal.ts:findImpactedNodes()` |
+| **WebFlux 端点检测** | ~1.5天 | 检测 RouterFunction Bean | ✅ | `routes.ts:detectWebFluxRoutes()` |
+| **WebClient HTTP 调用提取** | ~0.5天 | 检测 `.get().uri()` 模式 | ✅ | `routes.ts:detectWebClientCalls()` |
+| **Spring Data REST 端点** | ~0.5天 | 检测 @RepositoryRestResource | ✅ | `jpa-extractor.ts:indexRepositoryRestEndpoints()` |
+| **Actuator 端点检测** | ~0.5天 | 解析 management.endpoints | ✅ | `config-extractor.ts:indexActuatorEndpoints()` |
+| **Vue→API 边插入 (多模块)** | ~0.5天 | 多模块模式缺少 insertEdge 调用 | ✅ | `orchestrator.ts:515-518` |
 
-### 第二优先级 (补全后可满足 99% 场景)
+### 剩余缺口 (P1)
 
 | 修复项 | 工作量 | 说明 |
 |---|---|---|
 | Groovy 支持 | ~1天 | Gradle 脚本和 Spock 测试的 Groovy 解析 |
-| Cloud Stream binder 区分 | ~0.5天 | 记录 @Input/@Output 的 binder 类型 (kafka/rabbitmq) |
+| Cloud Stream binder 区分 | ~0.5天 | 记录 @Input/@Output 的 binder 类型 |
 
 ### 第三优先级 (增强功能)
 
@@ -221,8 +227,10 @@
 
 ## 五、总结
 
-**当前完成度**: 设计文档约 80% 功能已实现。
+**当前完成度**: 设计文档约 85% 功能已实现。企业 Spring Boot + 前端分离覆盖度约 95%。
 
-**核心能力已达**: 单仓库符号索引、跨仓库 external_* 关系、48+ 框架/中间件提取器、Dispatch Inference 引擎、AOP 解析、Conditional 注入、9 个 MCP 工具。
+**核心能力已达**: 单仓库符号索引、跨仓库 external_* 关系、48+ 框架/中间件提取器、Dispatch Inference 引擎、AOP 解析、Conditional 注入、22 个 MCP 工具。
 
-**关键缺口**: RestTemplate URL 解析、前后端 URL 精确匹配、Feign 方法级提取 这三点是影响 Spring Boot 企业项目分析准确度的最大瓶颈。修复后可在企业级 Spring 全家桶 + 前端分离的架构下覆盖 95% 以上的分析场景。
+**已修复 P0 缺口**: RestTemplate 持久化、Feign 方法级离开 workspace、Vue→Controller 映射纳入单项目、Impact 加入 external 表、WebFlux 端点、WebClient 调用、Spring Data REST、Actuator 端点、Vue→API 边插入。
+
+**剩余缺口**: Groovy 支持、Cloud Stream binder 区分、插件化提取器、--fast 模式、--progress、语义搜索 等 P1/P2 项目。

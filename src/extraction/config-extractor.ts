@@ -156,3 +156,50 @@ export function indexConfigProperties(
 
   return bindings
 }
+
+/**
+ * Detect Spring Boot Actuator endpoints from application configuration.
+ */
+export function indexActuatorEndpoints(queries: QueryManager, projectRoot: string, moduleId: string): number {
+  let count = 0
+  const configDirs = [
+    join(projectRoot, 'src', 'main', 'resources'),
+    projectRoot,
+  ]
+  for (const dir of configDirs) {
+    for (const fileName of ['application.yml', 'application.yaml', 'application.properties']) {
+      const fp = join(dir, fileName)
+      if (!existsSync(fp)) continue
+      try {
+        const content = readFileSync(fp, 'utf-8')
+        let includeAll = false
+        let exposedEndpoints: string[] = []
+
+        if (fileName.endsWith('.properties')) {
+          const exposeMatch = content.match(/management\.endpoints\.web\.exposure\.include\s*[=:]\s*(.+)/)
+          if (exposeMatch) {
+            exposedEndpoints = exposeMatch[1].split(',').map(s => s.trim().replace(/"/g, ''))
+            includeAll = exposedEndpoints.includes('*')
+          }
+        } else {
+          const yamlMatch = content.match(/management:\s*\n\s+endpoints:\s*\n\s+web:\s*\n\s+exposure:\s*\n\s+include:\s*(.+)/)
+          if (yamlMatch) {
+            exposedEndpoints = yamlMatch[1].split(',').map(s => s.trim().replace(/["']/g, ''))
+            includeAll = exposedEndpoints.includes('*')
+          }
+        }
+
+        if (includeAll) {
+          exposedEndpoints = ['health', 'info', 'metrics', 'env', 'beans', 'configprops', 'logfile', 'loggers', 'mappings', 'threaddump', 'heapdump', 'scheduledtasks', 'caches', 'conditions']
+        }
+
+        for (const ep of exposedEndpoints) {
+          const symbolId = `actuator.${moduleId}.${ep}`
+          queries.insertExternalSymbol(symbolId, ep, 'actuator_endpoint', moduleId, fp, `GET /actuator/${ep}`, '{}')
+          count++
+        }
+      } catch { /* silent */ }
+    }
+  }
+  return count
+}

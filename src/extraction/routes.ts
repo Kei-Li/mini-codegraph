@@ -1,7 +1,8 @@
 import { readFileSync, existsSync, readdirSync } from 'node:fs'
-import { join, extname } from 'node:path'
+import { join, extname, relative } from 'node:path'
 import type { QueryManager } from '../db/queries.js'
 import type { GraphQueryManager } from '../graph/queries.js'
+import type { VueApiCall } from '../types.js'
 
 export interface RouteInfo {
   framework: string
@@ -49,6 +50,10 @@ export function detectRoutes(
     routes.push(...detectSpringRoutes(projectRoot, queries, graph))
     // Also detect RestTemplate-based cross-service HTTP calls (design §8.1)
     routes.push(...detectRestTemplateCalls(projectRoot))
+    // Detect WebClient HTTP calls
+    routes.push(...detectWebClientCalls(projectRoot))
+    // Detect WebFlux functional endpoints
+    routes.push(...detectWebFluxRoutes(projectRoot))
   }
 
   if (existsSync(requirementsTxt)) {
@@ -801,4 +806,190 @@ function findFilesRecursive(dir: string, extensions: string[]): string[] {
     // skip
   }
   return result
+}
+
+/**
+ * Persist RestTemplate HTTP calls into external_references table
+ * so they appear in mini_cg_callers / mini_cg_impact queries.
+ */
+export function storeRestTemplateReferences(projectRoot: string, queries: QueryManager, serviceName: string): number {
+  const routes = detectRestTemplateCalls(projectRoot)
+  let count = 0
+  for (const route of routes) {
+    const url = route.path
+    const svcMatch = url.match(/^https?:\/\/([^/]+)/)
+    if (!svcMatch) continue
+    const targetService = svcMatch[1]
+    const symbolId = `http.resttemplate.${targetService}${route.path.replace(/[^a-zA-Z0-9/_-]/g, '_')}`
+    queries.insertExternalSymbol(symbolId, route.path, 'http_endpoint', targetService, route.handlerFile, `RestTemplate ${route.path}`, '{}')
+    queries.insertExternalReference(`${route.handlerFile}:${route.handlerLine}`, symbolId, 'http_request', targetService, JSON.stringify({ method: 'ANY', url: route.path }), serviceName)
+    count++
+  }
+  return count
+}
+
+/**
+ * Detect WebClient HTTP calls in Java files (Spring WebClient fluent API).
+ */
+export function detectWebClientCalls(projectRoot: string): RouteInfo[] {
+  const routes: RouteInfo[] = []
+  const javaFiles = findFilesByApiPattern(projectRoot, ['.java'])
+    .filter(f => {
+      try {
+        const content = readFileSync(f, 'utf-8')
+        return /\bWebClient\b/.test(content)
+      } catch { return false }
+    })
+
+  const wcRe1 = new RegExp("\\.(get|post|put|delete|patch)\\s*\\(\\s*\\)\\s*\\.\\s*uri\\s*\\(\\s*['\"`](https?://[^'\"`\\s)]+)['\"`]", 'g')
+  const wcRe2 = new RegExp("\\.(get|post|put|delete|patch)\\s*\\(\\s*\\)\\s*\\.\\s*uri\\s*\\(\\s*['\"`]([^'\"`\\s)]+)['\"`]", 'g')
+  const webClientPatterns = [wcRe1, wcRe2]
+
+  for (const file of javaFiles) {
+    try {
+      const content = readFileSync(file, 'utf-8')
+      const relPath = file.replace(projectRoot, '').replace(/^[/\\]/, '').replace(/\\/g, '/')
+      const lines = content.split('\n')
+      for (const pattern of webClientPatterns) {
+        pattern.lastIndex = 0
+        let m: RegExpExecArray | null
+        while ((m = pattern.exec(content)) !== null) {
+          const fullUri = m[2]
+          const lineNum = content.substring(0, m.index).split('\n').length
+          routes.push({
+            framework: 'spring-webclient',
+            method: m[1].toUpperCase(),
+            path: fullUri,
+            handlerFile: relPath,
+            handlerName: `webClient ${m[1]}() call: ${fullUri}`,
+            handlerLine: lineNum,
+            sourceLine: lines[lineNum - 1]?.trim() ?? '',
+          })
+        }
+      }
+    } catch { /* silent */ }
+  }
+  return routes
+}
+
+/**
+ * Persist WebClient HTTP calls into external_references table.
+ */
+export function storeWebClientReferences(projectRoot: string, queries: QueryManager, serviceName: string): number {
+  const routes = detectWebClientCalls(projectRoot)
+  let count = 0
+  for (const route of routes) {
+    const url = route.path
+    const svcMatch = url.match(/^https?:\/\/([^/]+)/)
+    if (!svcMatch) continue
+    const targetService = svcMatch[1]
+    const symbolId = `http.webclient.${targetService}${route.path.replace(/[^a-zA-Z0-9/_-]/g, '_')}`
+    queries.insertExternalSymbol(symbolId, route.path, 'http_endpoint', targetService, route.handlerFile, `WebClient ${route.method} ${route.path}`, '{}')
+    queries.insertExternalReference(`${route.handlerFile}:${route.handlerLine}`, symbolId, 'http_request', targetService, JSON.stringify({ method: route.method, url: route.path }), serviceName)
+    count++
+  }
+  return count
+}
+
+/**
+ * Detect Spring WebFlux functional endpoints (RouterFunction-based routes).
+ */
+export function detectWebFluxRoutes(projectRoot: string): RouteInfo[] {
+  const routes: RouteInfo[] = []
+  const javaFiles = findFilesByApiPattern(projectRoot, ['.java'])
+    .filter(f => {
+      try {
+        const content = readFileSync(f, 'utf-8')
+        return /\bRouterFunction\b/.test(content)
+      } catch { return false }
+    })
+
+  const routeRe = new RegExp("\\.route\\s*\\(\\s*(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\\s*\\(\\s*[\"]([^\"]+)[\"]\\s*\\)\\s*,\\s*(\\w+)::(\\w+)", 'g')
+  const nestedRe = new RegExp("route\\s*\\(\\s*(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\\s*\\(\\s*[\"]([^\"]+)[\"]\\s*\\)\\s*,\\s*(?:req\\s*->\\s*)?(\\w+)::(\\w+)", 'g')
+  const routePattern = routeRe
+  const nestedPattern = nestedRe
+
+  for (const file of javaFiles) {
+    try {
+      const content = readFileSync(file, 'utf-8')
+      const relPath = file.replace(projectRoot, '').replace(/^[/\\]/, '').replace(/\\/g, '/')
+      const lines = content.split('\n')
+
+      for (const pattern of [routePattern, nestedPattern]) {
+        pattern.lastIndex = 0
+        let m: RegExpExecArray | null
+        while ((m = pattern.exec(content)) !== null) {
+          const httpMethod = m[1]
+          const path = m[2]
+          const handlerClass = m[3]
+          const handlerMethod = m[4]
+          const lineNum = content.substring(0, m.index).split('\n').length
+          routes.push({
+            framework: 'spring-webflux',
+            method: httpMethod,
+            path,
+            handlerFile: relPath,
+            handlerName: `${handlerClass}.${handlerMethod}()`,
+            handlerLine: lineNum,
+            sourceLine: lines[lineNum - 1]?.trim() ?? '',
+          })
+        }
+      }
+    } catch { /* silent */ }
+  }
+  return routes
+}
+
+/**
+ * Persist WebFlux functional endpoints into external_references table.
+ */
+export function storeWebFluxReferences(projectRoot: string, queries: QueryManager, serviceName: string): number {
+  const routes = detectWebFluxRoutes(projectRoot)
+  let count = 0
+  for (const route of routes) {
+    const symbolId = `http.webflux.${route.method}.${route.path.replace(/[^a-zA-Z0-9/_-]/g, '_')}`
+    queries.insertExternalSymbol(symbolId, route.handlerName, 'http_endpoint', serviceName, route.handlerFile, `${route.method} ${route.path}`, '{}')
+    count++
+  }
+  return count
+}
+
+/**
+ * Extract Feign method-level references from the DB (works in both single-project and workspace modes).
+ * Call this after all Java files have been indexed so FeignClient nodes are available.
+ */
+export function storeFeignMethodReferences(queries: QueryManager, serviceName: string): number {
+  const feignNodes = queries.getNodesByAnnotation('FeignClient')
+  let count = 0
+  for (const node of feignNodes) {
+    const anns = queries.getAnnotationsByNode(node.id)
+    for (const a of anns) {
+      if (a.annotationName === 'FeignClient') {
+        const nameMatch = a.value.match(/name\s*=\s*["'](\w[\w-]*)["']/)
+        const targetService = nameMatch?.[1] || ''
+        // Service-level reference
+        const svcSymbolId = `feign.${targetService}.${node.name}`
+        queries.insertExternalSymbol(svcSymbolId, node.name, 'rpc_service', targetService, node.filePath, `FeignClient → ${targetService}`, '{}')
+        queries.insertExternalReference(`${node.filePath}:${node.startLine}:${node.startColumn}`, svcSymbolId, 'rpc_call', targetService, '{}', serviceName)
+        count++
+
+        // Method-level references
+        const children = queries.getChildren(node.id)
+        for (const child of children) {
+          const methodAnns = queries.getAnnotationsByNode(child.id)
+          for (const ma of methodAnns) {
+            if (['RequestMapping', 'GetMapping', 'PostMapping', 'PutMapping', 'DeleteMapping', 'PatchMapping'].includes(ma.annotationName)) {
+              const httpMethod = ma.annotationName === 'RequestMapping' ? 'ANY' : ma.annotationName.replace('Mapping', '').toUpperCase()
+              const path = ma.value.replace(/["']/g, '')
+              const symbolId = `feign.${targetService}.${child.name}${path}`
+              queries.insertExternalSymbol(symbolId, child.name, 'rpc_method', targetService, child.filePath, `${httpMethod} ${path}`, '{}')
+              queries.insertExternalReference(`${child.filePath}:${child.startLine}:${child.startColumn}`, symbolId, 'rpc_call', targetService, '{}', serviceName)
+              count++
+            }
+          }
+        }
+      }
+    }
+  }
+  return count
 }

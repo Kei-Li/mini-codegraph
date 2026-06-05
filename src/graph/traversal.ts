@@ -185,18 +185,63 @@ export class GraphTraverser {
       const node = this.queries.getNode(currentId)
       if (node) impacted.set(currentId, node)
 
+      // Internal callers
       for (const caller of this.queries.getCallers(currentId)) {
         dfs(caller.id, remainingDepth - 1)
       }
 
+      // Children (containment hierarchy)
       for (const child of this.queries.getChildren(currentId)) {
         dfs(child.id, remainingDepth - 1)
       }
 
+      // Interface → Implementation dispatch
       if (node) {
         const impls = this.findImplementations(node)
         for (const impl of impls) {
           dfs(impl.id, remainingDepth - 1)
+        }
+      }
+
+      // External references (cross-service callers that reference this symbol)
+      if (node) {
+        const extRefs = this.queries.getExternalReferencesByTarget(node.name)
+        for (const ref of extRefs) {
+          const pseudoId = `ext:${ref.id}`
+          if (!visited.has(pseudoId)) {
+            visited.add(pseudoId)
+            const pseudoNode: MiniCodeGraphNode = {
+              id: pseudoId,
+              kind: 'external_reference',
+              name: `[${ref.serviceName ?? 'ext'}] ${node.name}`,
+              qualifiedName: `${ref.serviceName ?? 'unknown'}.${ref.symbolName}`,
+              filePath: ref.detail ?? `external://${ref.serviceName ?? 'unknown'}`,
+              startLine: 0, endLine: 0, startColumn: 0, endColumn: 0,
+              language: '', docstring: '', signature: ref.detail ?? '',
+              visibility: 'public', isExported: true, parentId: null,
+            }
+            impacted.set(pseudoId, pseudoNode)
+          }
+        }
+
+        // Also: external symbols consumed by this node (RestTemplate/WebClient calls)
+        const extConsumer = this.queries.getExternalReferencesBySource(node.name)
+        for (const ref of extConsumer) {
+          const pseudoId = `ext:consume:${ref.id}`
+          if (!visited.has(pseudoId)) {
+            visited.add(pseudoId)
+            const pseudoNode: MiniCodeGraphNode = {
+              id: pseudoId,
+              kind: 'external_reference',
+              name: `consumes:${ref.symbolName}`,
+              qualifiedName: `${ref.serviceName ?? 'unknown'}.${ref.symbolName}`,
+              filePath: ref.detail ?? `external://${ref.serviceName ?? 'unknown'}`,
+              startLine: 0, endLine: 0, startColumn: 0, endColumn: 0,
+              language: '', docstring: '', signature: ref.detail ?? '',
+              visibility: 'public', isExported: true, parentId: null,
+            }
+            impacted.set(pseudoId, pseudoNode)
+          }
         }
       }
     }

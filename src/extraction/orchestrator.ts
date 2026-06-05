@@ -356,6 +356,74 @@ export class ExtractionOrchestrator {
       process.stderr.write(`  ${k8sNet.services.length} Services, ${k8sNet.ingresses.length} Ingresses, ${k8sNet.networkPolicies.length} NetworkPolicies\n`)
     }
 
+    // --- Cross-service reference persistence (enterprise P0) ---
+
+    process.stderr.write('Persisting RestTemplate cross-service references...\n')
+    try {
+      const { storeRestTemplateReferences, storeWebClientReferences } = await import('./routes.js')
+      const rtCount = storeRestTemplateReferences(projectRoot, this.queries, mid)
+      if (rtCount > 0) process.stderr.write(`  Stored ${rtCount} RestTemplate external references\n`)
+      const wcCount = storeWebClientReferences(projectRoot, this.queries, mid)
+      if (wcCount > 0) process.stderr.write(`  Stored ${wcCount} WebClient external references\n`)
+    } catch (e) { process.stderr.write(`  RestTemplate/WebClient persistence skipped: ${e}\n`) }
+
+    process.stderr.write('Persisting Feign method-level references...\n')
+    try {
+      const { storeFeignMethodReferences } = await import('./routes.js')
+      const feignCount = storeFeignMethodReferences(this.queries, mid)
+      if (feignCount > 0) process.stderr.write(`  Stored ${feignCount} Feign method external references\n`)
+    } catch (e) { process.stderr.write(`  Feign persistence skipped: ${e}\n`) }
+
+    process.stderr.write('Persisting WebFlux functional endpoints...\n')
+    try {
+      const { storeWebFluxReferences } = await import('./routes.js')
+      const wfCount = storeWebFluxReferences(projectRoot, this.queries, mid)
+      if (wfCount > 0) process.stderr.write(`  Stored ${wfCount} WebFlux functional endpoints\n`)
+    } catch (e) { process.stderr.write(`  WebFlux persistence skipped: ${e}\n`) }
+
+    // Vue frontend → controller API mapping (previously only in multi-module mode)
+    const hasVueFiles = files.some(f => f.endsWith('.vue'))
+    if (hasVueFiles) {
+      process.stderr.write('Mapping Vue frontend to API endpoints...\n')
+      try {
+        const { extractVueApiCalls } = await import('./vue-api-mapper.js')
+        const { resolveVueApiToController } = await import('./vue-api-mapper.js')
+        const { findFiles } = await import('../utils.js')
+        const vueFiles = findFiles(projectRoot, () => false).filter(f => f.endsWith('.vue'))
+        const allApiCalls: import('../types.js').VueApiCall[] = []
+        for (const vf of vueFiles) {
+          try {
+            const vfSource = readFileSync(vf, 'utf-8')
+            const calls = extractVueApiCalls(vfSource, relative(projectRoot, vf).replace(/\\/g, '/'))
+            allApiCalls.push(...calls)
+          } catch { /* silent */ }
+        }
+        const apiMappings = resolveVueApiToController(this.queries, allApiCalls, mid)
+        for (const m of apiMappings) {
+          this.queries.insertEdge(m.apiCall.componentFile, m.controllerNodeId, 'api_mapping', JSON.stringify({ path: m.route, method: m.apiCall.method }), m.apiCall.line, 0)
+        }
+        if (apiMappings.length > 0) {
+          process.stderr.write(`  ${apiMappings.length} Vue→API mappings\n`)
+        }
+      } catch (e) { process.stderr.write(`  Vue→API mapping skipped: ${e}\n`) }
+    }
+
+    // Spring Data REST endpoint detection
+    process.stderr.write('Detecting Spring Data REST endpoints...\n')
+    try {
+      const { indexRepositoryRestEndpoints } = await import('./jpa-extractor.js')
+      const restCount = indexRepositoryRestEndpoints(this.queries, mid)
+      if (restCount > 0) process.stderr.write(`  Found ${restCount} Spring Data REST endpoints\n`)
+    } catch (e) { process.stderr.write(`  Spring Data REST detection skipped: ${e}\n`) }
+
+    // Actuator endpoint detection
+    process.stderr.write('Detecting Actuator endpoints...\n')
+    try {
+      const { indexActuatorEndpoints } = await import('./config-extractor.js')
+      const actCount = indexActuatorEndpoints(this.queries, projectRoot, mid)
+      if (actCount > 0) process.stderr.write(`  Found ${actCount} Actuator endpoints\n`)
+    } catch (e) { process.stderr.write(`  Actuator detection skipped: ${e}\n`) }
+
     return result
   }
 
@@ -445,6 +513,9 @@ export class ExtractionOrchestrator {
         } catch (e) { console.error(`  Failed to extract API calls from ${vf}: ${e}`) }
       }
       const apiMappings = resolveVueApiToController(this.queries, allApiCalls, vm.id)
+      for (const m of apiMappings) {
+        this.queries.insertEdge(m.apiCall.componentFile, m.controllerNodeId, 'api_mapping', JSON.stringify({ path: m.route, method: m.apiCall.method }), m.apiCall.line, 0)
+      }
       if (apiMappings.length > 0) {
         process.stderr.write(`  ${vm.name}: ${apiMappings.length} Vue→API mappings\n`)
       }
