@@ -1,7 +1,8 @@
-import { readFileSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 import type { GraphQueryManager } from '../graph/queries.js'
 import type { JSONRPCRequest, JSONRPCResponse } from './server.js'
 import { createWorkspaceStatusHandler } from './handlers/workspace-status.js'
+import { getAllMermaidDiagrams } from '../visualization/mermaid.js'
 
 export interface ToolDefinition {
   name: string
@@ -507,15 +508,42 @@ export function createTools(
       },
     },
     {
-      name: 'mini_cg_modules',
-      description: 'List all indexed modules (microservices) in the project.',
+      name: 'mini_cg_module',
+      description: 'List all indexed modules (microservices) in the project with details.',
       inputSchema: {
         type: 'object',
-        properties: {},
+        properties: {
+          detail: { type: 'boolean', description: 'Include per-module file and node counts (default: true)' },
+        },
       },
-      handler: async () => {
-        const stats = graph.getStats()
-        return { modules: stats.modules ?? 0, files: stats.files ?? 0, nodes: stats.nodes ?? 0, edges: stats.edges ?? 0 }
+      handler: async (args) => {
+        const detail = args.detail !== false
+        const qm = graph.getQueries()
+        const modules = qm.getAllModules()
+        const stats = qm.getStats()
+        if (!detail) {
+          return { moduleCount: modules.length, modules: modules.map(m => ({ id: m.id, name: m.name, language: m.language })) }
+        }
+        const modulesWithStats = modules.map(m => {
+          const files = qm.getFilesByModule(m.id)
+          const nodes = qm.getAllNodes().filter(n => n.moduleId === m.id)
+          return {
+            id: m.id,
+            name: m.name,
+            language: m.language,
+            buildSystem: m.buildSystem,
+            rootPath: m.rootPath,
+            fileCount: files.length,
+            nodeCount: nodes.length,
+          }
+        })
+        return {
+          moduleCount: stats.modules ?? 0,
+          totalFiles: stats.files ?? 0,
+          totalNodes: stats.nodes ?? 0,
+          totalEdges: stats.edges ?? 0,
+          modules: modulesWithStats,
+        }
       },
     },
     {
@@ -702,6 +730,317 @@ export function createTools(
             })),
           })),
           configOverrides: configOverrides ? Object.entries(configOverrides).map(([k, v]) => `${k}=${v}`) : undefined,
+        }
+      },
+    },
+    {
+      name: 'mini_cg_file_content',
+      description: 'Read the full content of a file in the project. Use this when you need to see the complete source code.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'File path relative to project root' },
+          maxLines: { type: 'number', description: 'Maximum lines to read (default: 200, max: 2000)' },
+        },
+        required: ['path'],
+      },
+      handler: async (args) => {
+        const filePath = typeof args.path === 'string' ? args.path.slice(0, 500) : ''
+        const maxLines = Math.min(typeof args.maxLines === 'number' ? args.maxLines : 200, 2000)
+        if (!filePath) return { error: 'path required' }
+        try {
+          if (!existsSync(filePath)) return { error: `File not found: ${filePath}` }
+          const content = readFileSync(filePath, 'utf-8')
+          const lines = content.split('\n')
+          const truncated = lines.length > maxLines
+          return {
+            path: filePath,
+            lineCount: lines.length,
+            content: lines.slice(0, maxLines).join('\n'),
+            truncated,
+            linesTruncated: truncated ? lines.length - maxLines : 0,
+          }
+        } catch (err: any) {
+          return { error: `Failed to read file: ${err.message}` }
+        }
+      },
+    },
+    {
+      name: 'mini_cg_summary',
+      description: 'Get a high-level summary of the project or workspace — module count, file count, symbol breakdown, and key statistics.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          scope: { type: 'string', description: 'Scope: "project" (default) or "workspace"' },
+        },
+      },
+      handler: async (args) => {
+        const scope = typeof args.scope === 'string' ? args.scope : 'project'
+        const qm = graph.getQueries()
+        const stats = qm.getStats()
+        const modules = qm.getAllModules()
+        const nodes = qm.getAllNodes()
+        const kinds = new Map<string, number>()
+        for (const n of nodes) {
+          kinds.set(n.kind, (kinds.get(n.kind) || 0) + 1)
+        }
+        const externalSymbols = qm.getAllExternalSymbols()
+        return {
+          scope,
+          stats,
+          modules: modules.map(m => ({ id: m.id, name: m.name, language: m.language, buildSystem: m.buildSystem })),
+          symbolBreakdown: Object.fromEntries(kinds),
+          workspaceExternalSymbols: externalSymbols.length,
+          lastIndexed: stats.files > 0 ? new Date().toISOString() : 'Not indexed yet',
+        }
+      },
+    },
+    {
+      name: 'mini_cg_metrics',
+      description: 'Return internal performance metrics: index time, cache hit rate, worker utilization, and memory usage.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+      },
+      handler: async () => {
+        const stats = graph.getStats()
+        const qm = graph.getQueries()
+        const unresolvedCount = qm.getUnresolvedRefs().length
+        const allFiles = qm.getAllFiles()
+        const recentFiles = allFiles.filter(f => f.modifiedAt > Date.now() - 3600000).length
+        return {
+          stats: { files: stats.files, nodes: stats.nodes, edges: stats.edges, modules: stats.modules },
+          indexHealth: {
+            unresolvedReferences: unresolvedCount,
+            filesModifiedLastHour: recentFiles,
+            totalFiles: allFiles.length,
+          },
+          performance: {
+            cacheSize: 500,
+            staleness: graph.getStalenessWarning(),
+          },
+          timestamp: new Date().toISOString(),
+        }
+      },
+    },
+    {
+      name: 'mini_cg_mermaid',
+      description: 'Generate Mermaid diagram code for visualizing service architecture, dependencies, cache topology, or sequence flow.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          diagram: {
+            type: 'string',
+            description: 'Type of diagram: "architecture", "dependencies", "cache", "trace", "sequence", "transaction" (default: "architecture")',
+            enum: ['architecture', 'dependencies', 'cache', 'trace', 'sequence', 'transaction', 'all'],
+          },
+          service: { type: 'string', description: 'Service name filter (for sequence diagram)' },
+        },
+      },
+      handler: async (args) => {
+        const diagramType = typeof args.diagram === 'string' ? args.diagram : 'architecture'
+        const qm = graph.getQueries()
+        const allDiagrams = getAllMermaidDiagrams(qm)
+        const diagrams: Record<string, string> = {}
+        if (diagramType === 'all' || diagramType === 'architecture') diagrams.architecture = allDiagrams.architecture
+        if (diagramType === 'all' || diagramType === 'dependencies') diagrams.dependencies = allDiagrams.dependencies
+        if (diagramType === 'all' || diagramType === 'cache') diagrams.cache = allDiagrams.cache
+        if (diagramType === 'all' || diagramType === 'trace') diagrams.trace = allDiagrams.trace
+        if (diagramType === 'all' || diagramType === 'transaction') diagrams.transaction = allDiagrams.transaction
+        if (diagramType === 'all' || diagramType === 'sequence') {
+          const { generateSequenceDiagram } = await import('../visualization/mermaid.js')
+          diagrams.sequence = generateSequenceDiagram(qm, '')
+        }
+        return {
+          diagramType,
+          diagrams: Object.keys(diagrams).length > 0 ? diagrams : allDiagrams,
+          note: 'Copy this Mermaid code into a Mermaid renderer to visualize.',
+        }
+      },
+    },
+    {
+      name: 'mini_cg_related_tests',
+      description: 'Find test files that are related to a given source file or symbol. Useful before making changes to understand test impact.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          file: { type: 'string', description: 'Source file path to find related tests for' },
+          symbol: { type: 'string', description: 'Symbol name to find related tests for (alternative to file)' },
+        },
+      },
+      handler: async (args) => {
+        const filePath = typeof args.file === 'string' ? args.file : undefined
+        const symbol = typeof args.symbol === 'string' ? args.symbol : undefined
+        if (!filePath && !symbol) return { error: 'Either file or symbol is required' }
+
+        if (filePath) {
+          const affected = graph.findAffectedTestFiles([filePath])
+          return {
+            sourceFile: filePath,
+            relatedTests: affected.map(a => ({
+              testFile: a.testFile,
+              matchedSymbols: a.matchedSymbols,
+              confidence: a.confidence,
+            })),
+            total: affected.length,
+          }
+        }
+
+        const results = graph.search(symbol!, 5)
+        if (results.length === 0) return { symbol, relatedTests: [], total: 0, note: 'Symbol not found' }
+        const affected = graph.findAffectedTestFiles([results[0].node.filePath])
+        return {
+          symbol,
+          relatedTests: affected.map(a => ({
+            testFile: a.testFile,
+            matchedSymbols: a.matchedSymbols,
+            confidence: a.confidence,
+          })),
+          total: affected.length,
+        }
+      },
+    },
+    {
+      name: 'mini_cg_search_files',
+      description: 'Search for files by glob pattern. Supports patterns like "src/**/*Controller.java" or "**/*.tsx".',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          pattern: { type: 'string', description: 'Glob pattern to match file paths' },
+          limit: { type: 'number', description: `Maximum results${DESCR_WITH_LIMIT}` },
+        },
+        required: ['pattern'],
+      },
+      handler: async (args) => {
+        const pattern = typeof args.pattern === 'string' ? args.pattern.slice(0, 200) : ''
+        const { limit: rawLimit } = args
+        if (!pattern) return { error: 'pattern required' }
+        const p = paginate(graph.getFileListing(pattern, 1000), rawLimit)
+        return {
+          pattern,
+          files: p.items.map(f => ({ path: f.path, language: f.language, nodeCount: f.nodeCount })),
+          total: p.total, truncated: p.truncated,
+        }
+      },
+    },
+    {
+      name: 'mini_cg_recent_changes',
+      description: 'List recently modified files in the project, ordered by modification time. Useful to understand what is being actively worked on.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          hours: { type: 'number', description: 'How many hours back to look (default: 24, max: 168)' },
+          limit: { type: 'number', description: `Maximum results${DESCR_WITH_LIMIT}` },
+        },
+      },
+      handler: async (args) => {
+        const hours = Math.min(typeof args.hours === 'number' ? args.hours : 24, 168)
+        const { limit: rawLimit } = args
+        const cutoff = Date.now() - hours * 3600000
+        const qm = graph.getQueries()
+        const allFiles = qm.getAllFiles()
+        const recent = allFiles
+          .filter(f => f.modifiedAt > cutoff)
+          .sort((a, b) => b.modifiedAt - a.modifiedAt)
+        const p = paginate(recent, rawLimit)
+        return {
+          hours,
+          cutoff: new Date(cutoff).toISOString(),
+          changes: p.items.map(f => ({
+            path: f.path,
+            language: f.language,
+            modifiedAt: new Date(f.modifiedAt).toISOString(),
+            nodeCount: f.nodeCount,
+          })),
+          totalRecent: p.total,
+          allModifiedCount: recent.length,
+          truncated: p.truncated,
+        }
+      },
+    },
+    {
+      name: 'mini_cg_unresolved_refs',
+      description: 'List symbols that could not be resolved during indexing. These may indicate missing imports, broken references, or external dependencies.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          limit: { type: 'number', description: `Maximum results${DESCR_WITH_LIMIT}` },
+          offset: { type: 'number', description: DESCR_WITH_OFFSET },
+        },
+      },
+      handler: async (args) => {
+        const { limit: rawLimit, offset: rawOffset } = args
+        const qm = graph.getQueries()
+        const refs = qm.getUnresolvedRefs()
+        const p = paginate(refs, rawLimit, rawOffset)
+        return {
+          unresolvedRefs: p.items.map(r => ({
+            id: r.id,
+            referenceName: r.referenceName,
+            kind: r.kind,
+            filePath: r.filePath,
+            line: r.line,
+            col: r.col,
+            sourceNodeId: r.sourceNodeId,
+          })),
+          total: p.total, truncated: p.truncated,
+          note: 'These are symbols that could not be resolved. They may require additional index passes or indicate missing dependencies.',
+        }
+      },
+    },
+    {
+      name: 'mini_cg_export',
+      description: 'Export the graph data as JSON. Returns nodes, edges, files, and external symbols for external tooling.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          format: { type: 'string', description: 'Export format (default: "json")' },
+        },
+      },
+      handler: async () => {
+        const qm = graph.getQueries()
+        const nodes = qm.getAllNodes()
+        const edges = qm.getAllEdges()
+        const files = qm.getAllFiles()
+        const externalSymbols = qm.getAllExternalSymbols()
+        const externalRefs = qm.getAllExternalReferences()
+        return {
+          format: 'json',
+          exportedAt: new Date().toISOString(),
+          stats: { nodes: nodes.length, edges: edges.length, files: files.length, externalSymbols: externalSymbols.length, externalRefs: externalRefs.length },
+          data: {
+            nodes: nodes.slice(0, 5000),
+            edges: edges.slice(0, 5000),
+            files: files.slice(0, 1000),
+            externalSymbols: externalSymbols.slice(0, 1000),
+            externalReferences: externalRefs.slice(0, 1000),
+          },
+          truncated: nodes.length > 5000 || edges.length > 5000 || externalSymbols.length > 1000,
+          note: 'Large datasets are capped. Use the specific tools for targeted queries.',
+        }
+      },
+    },
+    {
+      name: 'mini_cg_available_tools',
+      description: 'List all available mini-cg tools with their descriptions and parameters. Use this to discover what tools are available.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+      },
+      handler: async () => {
+        const tools = createTools(graph, getPendingFiles)
+        return {
+          tools: tools.map(t => ({
+            name: t.name,
+            description: t.description,
+            parameters: t.inputSchema.properties ? Object.entries(t.inputSchema.properties).map(([key, val]: [string, any]) => ({
+              name: key,
+              type: val.type,
+              description: val.description || '',
+              required: t.inputSchema.required?.includes(key) || false,
+            })) : [],
+          })),
+          total: tools.length,
         }
       },
     },

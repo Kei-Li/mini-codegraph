@@ -12,9 +12,16 @@ export interface AsyncAnnotation {
   executor?: string
   line: number
   moduleId: string
+  virtualThread?: boolean
 }
 
 const SCHEDULED_ATTRS = ['cron', 'fixedRate', 'fixedDelay', 'initialDelay', 'zone']
+
+function detectVirtualThreadsEnabled(source: string): boolean {
+  return source.includes('@EnableVirtualThreads')
+    || source.includes('VirtualThreadTaskExecutor')
+    || source.includes('spring.threads.virtual.enabled=true')
+}
 
 export function indexAsyncAnnotations(
   queries: QueryManager,
@@ -24,6 +31,7 @@ export function indexAsyncAnnotations(
 ): AsyncAnnotation[] {
   const results: AsyncAnnotation[] = []
   const lines = source.split('\n')
+  const vtContext = detectVirtualThreadsEnabled(source)
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim()
@@ -37,6 +45,12 @@ export function indexAsyncAnnotations(
     } else if (line.startsWith('@Scheduled')) {
       annotation = 'Scheduled'
       annValue = line
+    } else if (line.startsWith('@EnableVirtualThreads')) {
+      queries.insertAnnotation(
+        `${filePath}:EnableVirtualThreads`,
+        'EnableVirtualThreads', '{}', i + 1, moduleId,
+      )
+      continue
     }
 
     if (!annotation) continue
@@ -84,6 +98,7 @@ export function indexAsyncAnnotations(
       executor,
       line: i + 1,
       moduleId,
+      virtualThread: vtContext,
     }
     results.push(ann)
 
@@ -91,13 +106,11 @@ export function indexAsyncAnnotations(
     const parentNodes = queries.searchNodes(filePath.split('/').pop()?.replace('.java', '') || '', 3)
       .filter(n => n.moduleId === moduleId && n.filePath === filePath)
     for (const pn of parentNodes) {
-      queries.insertAnnotation(nodeId, annotation,
-        JSON.stringify({ cron: cronExpr, fixedRate, fixedDelay, executor }), i + 1, moduleId)
+      const meta: Record<string, any> = { cron: cronExpr, fixedRate, fixedDelay, executor }
+      if (vtContext) meta.virtualThread = true
+      queries.insertAnnotation(nodeId, annotation, JSON.stringify(meta), i + 1, moduleId)
       queries.insertEdge(pn.id, nodeId, annotation === 'Async' ? 'async_method' : 'scheduled_method',
-        JSON.stringify(annotation === 'Async'
-          ? { executor }
-          : { cron: cronExpr, fixedRate, fixedDelay }),
-        i + 1, 0)
+        JSON.stringify(meta), i + 1, 0)
     }
   }
 

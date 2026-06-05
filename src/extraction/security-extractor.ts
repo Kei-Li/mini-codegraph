@@ -3,9 +3,10 @@ import type { QueryManager } from '../db/queries.js'
 const SECURITY_ANNOTATIONS = new Set([
   'PreAuthorize', 'PostAuthorize', 'PreFilter', 'PostFilter',
   'Secured', 'RolesAllowed', 'PermitAll', 'DenyAll',
-  'EnableResourceServer', 'EnableAuthorizationServer',
-  'EnableGlobalMethodSecurity', 'EnableWebSecurity',
+  'EnableGlobalMethodSecurity', 'EnableMethodSecurity',
+  'EnableWebSecurity', 'EnableWebFluxSecurity',
   'EnableOAuth2Sso', 'EnableOAuth2Client',
+  'RegisteredOAuth2AuthorizedClient',
 ])
 
 export function extractSecurityAnnotations(source: string, filePath: string, moduleId: string): {

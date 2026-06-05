@@ -57,6 +57,8 @@ import { indexInterceptors } from './interceptor-extractor.js'
 import { indexStreamFunctions } from './stream-function-extractor.js'
 import { indexJpaCustomQueries } from './jpa-query-extractor.js'
 import { indexProfileAnnotations } from './profile-extractor.js'
+import { indexObservationAnnotations } from './observability-extractor.js'
+import { indexHttpExchanges } from './http-exchange-extractor.js'
 
 export function sourceIncludesAny(source: string, keywords: string[]): boolean {
   for (const kw of keywords) {
@@ -83,7 +85,18 @@ export const EXTRACTOR_GUARDS: Record<string, string[]> = {
   jpaQuery: ['@Query(', '@NamedQuery', '@NamedNativeQuery', '@Modifying'],
   profile: ['@Profile', '@Conditional(', '@ConditionalOnProperty'],
   redis: ['@RedisHash', '@Cacheable', '@CacheEvict', '@CachePut', '@Caching'],
+  observability: ['@Observed', '@Observation', '@Timed', '@Counted', '@SpanTag', 'ObservationRegistry', 'micrometer-tracing'],
+  httpExchange: ['@HttpExchange', '@GetExchange', '@PostExchange', '@PutExchange', '@DeleteExchange', '@PatchExchange'],
 }
+
+export const ALL_EXTRACTOR_KEYWORDS: string[] = [
+  ...new Set([
+    ...Object.values(EXTRACTOR_GUARDS).flat(),
+    'StreamBridge', 'Function<', 'Supplier<', 'Consumer<', 'java.util.function',
+    'Mongo', 'mongo', 'Document', 'mongodb',
+    'sql', 'SQL', 'Sql', 'jdbc', 'Jdbc', 'PreparedStatement', 'ResultSet', 'Connection', 'DataSource',
+  ]),
+]
 
 export function shouldRunExtractor(source: string, name: string): boolean {
   const keywords = EXTRACTOR_GUARDS[name]
@@ -582,8 +595,9 @@ export class ExtractionOrchestrator {
       relPath = relative(projectRoot, filePath).replace(/\\/g, '/')
       contentHash = computeContentHash(source)
 
-      if (source.length > 1_048_576) {
-        throw new Error(`File exceeds 1MB size limit (${(source.length / 1024 / 1024).toFixed(1)}MB)`)
+      if (source.length > 5_242_880) {
+        console.warn(`  [warn] File exceeds size limit: ${relPath} (${(source.length / 1024 / 1024).toFixed(1)}MB, limit 5MB)`)
+        throw new Error(`File exceeds 5MB size limit (${(source.length / 1024 / 1024).toFixed(1)}MB)`)
       }
 
       if (attempt > 0) {
@@ -735,7 +749,7 @@ export class ExtractionOrchestrator {
         })))
       }
 
-      if (lang.name === 'java') {
+      if (lang.name === 'java' && sourceIncludesAny(source, ALL_EXTRACTOR_KEYWORDS)) {
         if (shouldRunExtractor(source, 'jpa')) indexJpaEntities(this.queries, source, relPath, mid)
         if (shouldRunExtractor(source, 'security')) indexSecurity(this.queries, source, relPath, mid)
         if (shouldRunExtractor(source, 'batch')) indexBatchJobs(this.queries, source, relPath, mid)
@@ -753,8 +767,10 @@ export class ExtractionOrchestrator {
         if (shouldRunExtractor(source, 'jpaQuery')) indexJpaCustomQueries(this.queries, source, relPath, mid)
         if (shouldRunExtractor(source, 'profile')) indexProfileAnnotations(this.queries, source, relPath, mid)
         if (shouldRunExtractor(source, 'redis')) indexRedisAnnotations(this.queries, source, relPath, mid)
+        if (shouldRunExtractor(source, 'observability')) indexObservationAnnotations(this.queries, source, relPath, mid)
+        if (shouldRunExtractor(source, 'httpExchange')) indexHttpExchanges(this.queries, source, relPath, mid)
         if (sourceIncludesAny(source, ['StreamBridge', 'Function<', 'Supplier<', 'Consumer<', 'java.util.function'])) {
-          indexStreamFunctions(this.queries, source, relPath, mid)
+          indexStreamFunctions(this.queries, source, relPath, mid, projectRoot)
         }
         if (sourceIncludesAny(source, ['Mongo', 'mongo', 'Document', 'mongodb'])) {
           indexMongoEntities(this.queries, source, relPath, mid)
@@ -889,7 +905,7 @@ export class ExtractionOrchestrator {
                 filePath: relPath,
               })))
             }
-            if (lang.name === 'java') {
+            if (lang.name === 'java' && sourceIncludesAny(src, ALL_EXTRACTOR_KEYWORDS)) {
               if (shouldRunExtractor(src, 'jpa')) indexJpaEntities(this.queries, src, relPath, moduleId)
               if (shouldRunExtractor(src, 'security')) indexSecurity(this.queries, src, relPath, moduleId)
               if (shouldRunExtractor(src, 'batch')) indexBatchJobs(this.queries, src, relPath, moduleId)
@@ -907,8 +923,10 @@ export class ExtractionOrchestrator {
               if (shouldRunExtractor(src, 'jpaQuery')) indexJpaCustomQueries(this.queries, src, relPath, moduleId)
               if (shouldRunExtractor(src, 'profile')) indexProfileAnnotations(this.queries, src, relPath, moduleId)
               if (shouldRunExtractor(src, 'redis')) indexRedisAnnotations(this.queries, src, relPath, moduleId)
+              if (shouldRunExtractor(src, 'observability')) indexObservationAnnotations(this.queries, src, relPath, moduleId)
+              if (shouldRunExtractor(src, 'httpExchange')) indexHttpExchanges(this.queries, src, relPath, moduleId)
               if (sourceIncludesAny(src, ['StreamBridge', 'Function<', 'Supplier<', 'Consumer<', 'java.util.function'])) {
-                indexStreamFunctions(this.queries, src, relPath, moduleId)
+                indexStreamFunctions(this.queries, src, relPath, moduleId, projectRoot)
               }
               if (sourceIncludesAny(src, ['Mongo', 'mongo', 'Document', 'mongodb'])) {
                 indexMongoEntities(this.queries, src, relPath, moduleId)

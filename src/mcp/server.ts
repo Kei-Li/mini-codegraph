@@ -93,7 +93,7 @@ export class MCPServer {
             },
             serverInfo: {
               name: 'mini-codegraph',
-              version: '0.1.0',
+              version: '0.2.0',
             },
             instructions: [
               'mini-codegraph provides code intelligence through a knowledge graph built from AST parsing.',

@@ -11,6 +11,8 @@ import { RabbitMQExtractor } from './extractors/rabbitmq.js'
 import { RedisExtractor } from './extractors/redis.js'
 import { DatabaseExtractor } from './extractors/database.js'
 import { FrontendExtractor } from './extractors/frontend.js'
+import { DatabaseMigrationExtractor } from './extractors/database-migration.js'
+import { OpenApiExtractor } from './extractors/openapi.js'
 import { getGitChangedFiles } from '../utils.js'
 
 export class WorkspaceSync {
@@ -33,6 +35,8 @@ export class WorkspaceSync {
     frameworkExtractor.register(new RedisExtractor())
     frameworkExtractor.register(new DatabaseExtractor())
     frameworkExtractor.register(new FrontendExtractor())
+    frameworkExtractor.register(new DatabaseMigrationExtractor())
+    frameworkExtractor.register(new OpenApiExtractor())
   }
 
   private computeFileHash(filePath: string): string {

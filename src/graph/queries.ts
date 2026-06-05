@@ -17,6 +17,10 @@ export class GraphQueryManager {
   private pendingFiles: Set<string> = new Set()
   private lastSyncTime = Date.now()
 
+  getQueryManager(): QueryManager {
+    return this.queries
+  }
+
   constructor(queries: QueryManager, projectRoot: string) {
     this.queries = queries
     this.projectRoot = projectRoot

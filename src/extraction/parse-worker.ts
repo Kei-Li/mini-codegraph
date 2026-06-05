@@ -55,11 +55,12 @@ parentPort?.on('message', async (msg: WorkerRequest) => {
       const stat = statSync(msg.absolutePath)
       const contentHash = computeContentHash(source)
 
-      if (source.length > 1_048_576) {
+      if (source.length > 5_242_880) {
+        console.warn(`[warn] File exceeds size limit: ${msg.absolutePath} (${(source.length / 1024 / 1024).toFixed(1)}MB, limit 5MB)`)
         parentPort?.postMessage({
           type: 'parse-result',
           id: msg.id,
-          error: 'File exceeds 1MB size limit',
+          error: `File exceeds 5MB size limit (${(source.length / 1024 / 1024).toFixed(1)}MB)`,
         })
         return
       }

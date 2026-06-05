@@ -3,6 +3,17 @@ import { createTools } from '../src/mcp/tools.js'
 import type { GraphQueryManager } from '../src/graph/queries.js'
 
 function createMockGraph(overrides: Partial<GraphQueryManager> = {}): GraphQueryManager {
+  const mockQueries = {
+    getAllNodes: vi.fn().mockReturnValue([]),
+    getAllFiles: vi.fn().mockReturnValue([]),
+    getAllModules: vi.fn().mockReturnValue([]),
+    getAllEdges: vi.fn().mockReturnValue([]),
+    getUnresolvedRefs: vi.fn().mockReturnValue([]),
+    getAllExternalSymbols: vi.fn().mockReturnValue([]),
+    getAllExternalReferences: vi.fn().mockReturnValue([]),
+    getStats: vi.fn().mockReturnValue({ files: 0, nodes: 0, edges: 0, modules: 0 }),
+    getFilesByModule: vi.fn().mockReturnValue([]),
+  }
   return {
     search: vi.fn().mockReturnValue([]),
     getCallers: vi.fn().mockReturnValue([]),
@@ -28,6 +39,13 @@ function createMockGraph(overrides: Partial<GraphQueryManager> = {}): GraphQuery
     getSqlStatements: vi.fn().mockReturnValue([]),
     checkStaleFiles: vi.fn(),
     getNode: vi.fn(),
+    getQueries: vi.fn().mockReturnValue(mockQueries),
+    getQueryManager: vi.fn().mockReturnValue(mockQueries),
+    getStalenessWarning: vi.fn().mockReturnValue(null),
+    findAffectedTestFiles: vi.fn().mockReturnValue([]),
+    getDispatchTargets: vi.fn().mockReturnValue([]),
+    getDispatchChain: vi.fn().mockReturnValue([]),
+    getActiveImplementations: vi.fn().mockReturnValue([]),
     ...overrides,
   } as unknown as GraphQueryManager
 }
@@ -52,7 +70,7 @@ describe('MCP tools', () => {
       expect(names).toContain('mini_cg_architecture')
       expect(names).toContain('mini_cg_feign')
       expect(names).toContain('mini_cg_mybatis')
-      expect(names).toContain('mini_cg_modules')
+      expect(names).toContain('mini_cg_module')
       expect(names).toContain('mini_cg_react')
       expect(names).toContain('mini_cg_mongo')
       expect(names).toContain('mini_cg_redis')
@@ -234,17 +252,30 @@ describe('MCP tools', () => {
     })
   })
 
-  describe('mini_cg_modules', () => {
+  describe('mini_cg_module', () => {
     it('returns module stats', async () => {
-      const graph = createMockGraph({
+      const queriesMock = {
+        getAllNodes: vi.fn().mockReturnValue([]),
+        getAllFiles: vi.fn().mockReturnValue([]),
+        getAllModules: vi.fn().mockReturnValue([
+          { id: 'mod1', name: 'order-service', language: 'java', buildSystem: 'maven', rootPath: '/test/order', indexedAt: 0 },
+          { id: 'mod2', name: 'payment-service', language: 'java', buildSystem: 'maven', rootPath: '/test/payment', indexedAt: 0 },
+        ]),
+        getAllEdges: vi.fn().mockReturnValue([]),
+        getUnresolvedRefs: vi.fn().mockReturnValue([]),
+        getAllExternalSymbols: vi.fn().mockReturnValue([]),
+        getAllExternalReferences: vi.fn().mockReturnValue([]),
         getStats: vi.fn().mockReturnValue({ files: 10, nodes: 50, edges: 100, modules: 2 }),
+        getFilesByModule: vi.fn().mockReturnValue([]),
+      }
+      const graph = createMockGraph({
+        getQueries: vi.fn().mockReturnValue(queriesMock),
       })
       const tools = createTools(graph)
-      const tool = tools.find(t => t.name === 'mini_cg_modules')!
+      const tool = tools.find(t => t.name === 'mini_cg_module')!
 
-      const result = await tool.handler({}, graph)
-      expect(result.modules).toBe(2)
-      expect(result.files).toBe(10)
+      const result = await tool.handler({ detail: false }, graph)
+      expect(result.moduleCount).toBe(2)
     })
   })
 

@@ -3,6 +3,12 @@ import { join } from 'node:path'
 import type { IExtractor, ExtractionOutput } from './frameworks.js'
 import type { QueryManager } from '../../db/queries.js'
 
+function safeJsonParse(text: string): any {
+  try { return JSON.parse(text) } catch { return {} }
+}
+
+const HTTP_VERBS = ['GetMapping', 'PostMapping', 'PutMapping', 'DeleteMapping', 'PatchMapping']
+
 export class SpringCloudExtractor implements IExtractor {
   name = 'spring-cloud'
 
@@ -13,21 +19,26 @@ export class SpringCloudExtractor implements IExtractor {
     const appName = this.detectApplicationName(projectRoot)
     if (!appName) return { provides, consumes }
 
+    // F2: Controller endpoints → provides (with security metadata)
     const controllerNodes = queries.getNodesByAnnotation('RequestMapping')
     for (const node of controllerNodes) {
       const anns = queries.getAnnotationsByNode(node.id)
       for (const a of anns) {
-        if (['RequestMapping', 'GetMapping', 'PostMapping', 'PutMapping', 'DeleteMapping'].includes(a.annotationName)) {
+        if (['RequestMapping', ...HTTP_VERBS].includes(a.annotationName)) {
+          const secAnns = queries.getAnnotationsByNode(node.id)
+            .filter(s => ['PreAuthorize', 'PostAuthorize', 'Secured', 'RolesAllowed', 'PreFilter', 'PostFilter', 'PermitAll', 'DenyAll'].includes(s.annotationName))
+          const secMeta = secAnns.map(s => `${s.annotationName}(${s.value})`).join('; ')
           provides.push({
             id: `http.${appName}.${node.name}`,
             name: node.name,
             kind: 'http_endpoint',
-            signature: `${a.annotationName} ${a.value}`,
+            signature: secMeta ? `${a.annotationName} ${a.value} | secured: ${secMeta}` : `${a.annotationName} ${a.value}`,
           })
         }
       }
     }
 
+    // FeignClient → consumes
     const feignNodes = queries.getNodesByAnnotation('FeignClient')
     for (const node of feignNodes) {
       const anns = queries.getAnnotationsByNode(node.id)
@@ -35,18 +46,16 @@ export class SpringCloudExtractor implements IExtractor {
         if (a.annotationName === 'FeignClient') {
           const nameMatch = a.value.match(/name\s*=\s*["'](\w[\w-]*)["']/)
           const targetService = nameMatch?.[1] || ''
-          // Service-level Feign dependency
           consumes.push({
             symbolId: `feign.${targetService}.${node.name}`,
             referenceType: 'rpc_call',
             sourceLocation: `${node.filePath}:${node.startLine}:${node.startColumn}`,
           })
-          // Method-level Feign dependencies — resolve individual API calls
           const children = queries.getChildren(node.id)
           for (const child of children) {
             const methodAnns = queries.getAnnotationsByNode(child.id)
             for (const ma of methodAnns) {
-              if (['RequestMapping', 'GetMapping', 'PostMapping', 'PutMapping', 'DeleteMapping', 'PatchMapping'].includes(ma.annotationName)) {
+              if ([...HTTP_VERBS, 'RequestMapping'].includes(ma.annotationName)) {
                 const httpMethod = ma.annotationName === 'RequestMapping' ? 'ANY'
                   : ma.annotationName.replace('Mapping', '').toUpperCase()
                 const path = ma.value.replace(/["']/g, '')
@@ -62,13 +71,14 @@ export class SpringCloudExtractor implements IExtractor {
       }
     }
 
+    // @LoadBalancedClient → consumes
     const lbNodes = queries.getNodesByAnnotation('LoadBalancedClient')
     for (const node of lbNodes) {
       const anns = queries.getAnnotationsByNode(node.id)
       for (const a of anns) {
         if (a.annotationName === 'LoadBalancedClient') {
           try {
-            const meta = JSON.parse(a.value)
+            const meta = safeJsonParse(a.value)
             if (meta.serviceName) {
               consumes.push({
                 symbolId: `resttemplate.${meta.serviceName}.${meta.fieldName || node.name}`,
@@ -81,6 +91,19 @@ export class SpringCloudExtractor implements IExtractor {
       }
     }
 
+    // F3: Plain RestTemplate calls via URL → consumes (http://SERVICE_NAME/...)
+    const restTemplateCalls = this.detectPlainRestTemplateCalls(projectRoot)
+    for (const call of restTemplateCalls) {
+      consumes.push(call)
+    }
+
+    // F3: WebClient builder calls → consumes
+    const webClientCalls = this.detectWebClientCalls(projectRoot)
+    for (const call of webClientCalls) {
+      consumes.push(call)
+    }
+
+    // RouteLocator Bean → consumes
     const routeNodes = queries.getNodesByAnnotation('Bean')
     for (const node of routeNodes) {
       const anns = queries.getAnnotationsByNode(node.id)
@@ -96,6 +119,74 @@ export class SpringCloudExtractor implements IExtractor {
     }
 
     return { provides, consumes }
+  }
+
+  private detectPlainRestTemplateCalls(projectRoot: string): ExtractionOutput['consumes'] {
+    const calls: ExtractionOutput['consumes'] = []
+    const srcDir = join(projectRoot, 'src')
+    if (!existsSync(srcDir)) return calls
+
+    const files = this.collectJavaFiles(srcDir)
+    const serviceUrlPattern = /(?:restTemplate|restOps|this\.restTemplate)\s*\.\s*(?:getForObject|getForEntity|postForObject|postForEntity|put|delete|exchange|execute)\(\s*["'](https?:\/\/([\w-]+)\/[^"']*)["']/gi
+    const directUrlPattern = /["'](https?:\/\/([\w-]+)\/[^"']*)["']/g
+
+    for (const f of files) {
+      try {
+        const content = readFileSync(f, 'utf-8')
+        let m: RegExpExecArray | null
+        while ((m = serviceUrlPattern.exec(content)) !== null) {
+          const serviceName = m[2]
+          const fullUrl = m[1]
+          calls.push({
+            symbolId: `resttemplate.${serviceName}.${fullUrl}`,
+            referenceType: 'rpc_call',
+            sourceLocation: `${f}:${content.substring(0, m.index).split('\n').length}:1`,
+          })
+        }
+      } catch { /* silent */ }
+    }
+
+    return calls
+  }
+
+  private detectWebClientCalls(projectRoot: string): ExtractionOutput['consumes'] {
+    const calls: ExtractionOutput['consumes'] = []
+    const srcDir = join(projectRoot, 'src')
+    if (!existsSync(srcDir)) return calls
+
+    const files = this.collectJavaFiles(srcDir)
+    const webClientPattern = /(?:webClient|this\.webClient|WebClient\.create)\s*\.\s*(?:get|post|put|delete)\s*\(\s*\)\s*\.\s*uri\s*\(\s*["'](https?:\/\/([\w-]+)\/[^"']*)["']/gi
+
+    for (const f of files) {
+      try {
+        const content = readFileSync(f, 'utf-8')
+        let m: RegExpExecArray | null
+        while ((m = webClientPattern.exec(content)) !== null) {
+          const serviceName = m[2]
+          const fullUrl = m[1]
+          calls.push({
+            symbolId: `webclient.${serviceName}.${fullUrl}`,
+            referenceType: 'rpc_call',
+            sourceLocation: `${f}:${content.substring(0, m.index).split('\n').length}:1`,
+          })
+        }
+      } catch { /* silent */ }
+    }
+
+    return calls
+  }
+
+  private collectJavaFiles(dir: string): string[] {
+    const files: string[] = []
+    try {
+      const entries = readdirSync(dir, { withFileTypes: true })
+      for (const e of entries) {
+        const full = join(dir, e.name)
+        if (e.isDirectory()) files.push(...this.collectJavaFiles(full))
+        else if (e.name.endsWith('.java')) files.push(full)
+      }
+    } catch { /* silent */ }
+    return files
   }
 
   private detectApplicationName(projectRoot: string): string | null {

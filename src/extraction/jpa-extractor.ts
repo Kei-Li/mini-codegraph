@@ -4,7 +4,7 @@ import type { JpaEntity } from '../types.js'
 export function extractJpaEntities(source: string, filePath: string): JpaEntity[] {
   const entities: JpaEntity[] = []
 
-  if (!source.includes('@Entity') && !source.includes('@MappedSuperclass')) return entities
+  if (!source.includes('@Entity') && !source.includes('@MappedSuperclass') && !source.includes('jakarta.persistence.Entity') && !source.includes('jakarta.persistence.MappedSuperclass')) return entities
 
   const classMatch = source.match(/(?:public\s+)?(?:abstract\s+)?\bclass\s+(\w+)/)
   if (!classMatch) return entities

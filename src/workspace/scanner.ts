@@ -18,6 +18,7 @@ export class WorkspaceScanner {
 
   scan(): ScannedProject[] {
     const projects: ScannedProject[] = []
+    const seenPaths = new Set<string>()
 
     if (!existsSync(this.workspaceRoot)) return projects
 
@@ -26,11 +27,71 @@ export class WorkspaceScanner {
       if (!entry.isDirectory()) continue
       if (entry.name.startsWith('.')) continue
       const projectPath = join(this.workspaceRoot, entry.name)
+      if (seenPaths.has(projectPath)) continue
+      seenPaths.add(projectPath)
+
+      // Detect top-level project
       const project = this.detectProject(projectPath, entry.name)
-      if (project) projects.push(project)
+      if (project) {
+        projects.push(project)
+      }
+
+      // Recursively discover Maven/Gradle sub-modules inside monorepo
+      const subModules = this.discoverSubModules(projectPath, seenPaths)
+      for (const sm of subModules) {
+        const smProject = this.detectProject(sm.path, sm.name)
+        if (smProject) projects.push(smProject)
+      }
     }
 
     return projects
+  }
+
+  private discoverSubModules(rootPath: string, seenPaths: Set<string>): { name: string; path: string }[] {
+    const modules: { name: string; path: string }[] = []
+
+    // Maven multi-module: read <modules> from pom.xml
+    const pomPath = join(rootPath, 'pom.xml')
+    if (existsSync(pomPath)) {
+      try {
+        const content = readFileSync(pomPath, 'utf-8')
+        const moduleRegex = /<module>([^<]+)<\/module>/g
+        let m: RegExpExecArray | null
+        while ((m = moduleRegex.exec(content)) !== null) {
+          const modDir = join(rootPath, m[1])
+          if (!seenPaths.has(modDir) && existsSync(modDir)) {
+            seenPaths.add(modDir)
+            modules.push({ name: m[1], path: modDir })
+            // Nested: sub-module may have its own sub-modules
+            modules.push(...this.discoverSubModules(modDir, seenPaths))
+          }
+        }
+      } catch { /* silent */ }
+    }
+
+    // Gradle multi-project: read settings.gradle[.kts] for include statements
+    for (const settingsFile of ['settings.gradle', 'settings.gradle.kts']) {
+      const settingsPath = join(rootPath, settingsFile)
+      if (existsSync(settingsPath)) {
+        try {
+          const content = readFileSync(settingsPath, 'utf-8')
+          const includeRegex = /include\s+(?:"([^"]+)"|'([^']+)')/g
+          let im: RegExpExecArray | null
+          while ((im = includeRegex.exec(content)) !== null) {
+            const modPath = im[1] || im[2]
+            const modDir = join(rootPath, modPath)
+            if (!seenPaths.has(modDir) && existsSync(modDir)) {
+              seenPaths.add(modDir)
+              const modName = modPath.split('/').pop() || modPath
+              modules.push({ name: modName, path: modDir })
+              modules.push(...this.discoverSubModules(modDir, seenPaths))
+            }
+          }
+        } catch { /* silent */ }
+      }
+    }
+
+    return modules
   }
 
   private detectProject(projectPath: string, name: string): ScannedProject | null {
@@ -67,6 +128,7 @@ export class WorkspaceScanner {
         const deps = { ...pkg.dependencies, ...pkg.devDependencies } as Record<string, string>
         if (deps.vue || deps.nuxt) { language = 'vue'; frameworks.push('vue') }
         else if (deps.react || deps['react-dom'] || deps.next) { language = 'typescript'; frameworks.push('react') }
+        else if (deps['@angular/core'] || deps['@angular/common'] || deps.angular) { language = 'typescript'; frameworks.push('angular') }
         else language = 'typescript'
       } catch { language = 'typescript' }
     } else if (hasRequirements || hasPythonProject(projectPath)) {

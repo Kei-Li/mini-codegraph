@@ -248,9 +248,10 @@ export class MiniCodeGraph {
 
       if (tracked && tracked.contentHash === contentHash) continue
 
-      // Large file skip (>1MB)
-      if (content.length > 1_048_576) {
-        result.errors.push(`Skipped large file: ${filePath} (${content.length} bytes)`)
+      // Large file skip (>5MB)
+      if (content.length > 5_242_880) {
+        console.warn(`[warn] File exceeds size limit: ${filePath} (${(content.length / 1024 / 1024).toFixed(1)}MB, limit 5MB)`)
+        result.errors.push(`Skipped large file: ${filePath} (${(content.length / 1024 / 1024).toFixed(1)}MB)`)
         continue
       }
 

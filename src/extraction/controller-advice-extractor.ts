@@ -84,6 +84,7 @@ export function indexControllerAdvice(
         const returnType = methodMatch[1]
         const methodName = methodMatch[2]
         let responseStatus: number | undefined
+        const isProblemDetail = returnType.includes('ProblemDetail') || returnType.includes('ErrorResponse') || source.includes('spring.mvc.problemdetails.enabled=true') || source.includes('spring.webflux.problemdetails.enabled=true')
 
         for (let k = i - 3; k <= i + 3; k++) {
           if (k >= 0 && k < lines.length && lines[k].includes('@ResponseStatus')) {
@@ -103,12 +104,13 @@ export function indexControllerAdvice(
           const caNodes = queries.searchNodes(currentAdvice.className, 10)
             .filter(n => n.moduleId === moduleId && n.filePath === filePath && n.kind === 'class')
           for (const cn of caNodes) {
-            queries.insertAnnotation(cn.id, 'ExceptionHandler',
-              JSON.stringify({ exceptionType: et, methodName, responseStatus }), i + 1, moduleId)
+            const meta: Record<string, any> = { exceptionType: et, methodName, responseStatus }
+            if (isProblemDetail) meta.problemDetail = true
+            queries.insertAnnotation(cn.id, 'ExceptionHandler', JSON.stringify(meta), i + 1, moduleId)
             const excNodes = queries.searchNodes(et, 5).filter(n => n.moduleId === moduleId && n.kind === 'class')
             for (const en of excNodes) {
               queries.insertEdge(cn.id, en.id,
-                'exception_handler', JSON.stringify({ exceptionType: et, methodName, responseStatus }), i + 1, 0)
+                'exception_handler', JSON.stringify(meta), i + 1, 0)
             }
           }
         }
