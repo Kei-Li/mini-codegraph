@@ -29,6 +29,7 @@ describe('Logger functions', () => {
   it('setLogger and getLogger round-trip', () => {
     const custom: typeof defaultLogger = {
       debug: vi.fn(),
+      info: vi.fn(),
       warn: vi.fn(),
       error: vi.fn(),
     }
@@ -40,7 +41,7 @@ describe('Logger functions', () => {
     const debugFn = vi.fn()
     const warnFn = vi.fn()
     const errorFn = vi.fn()
-    setLogger({ debug: debugFn, warn: warnFn, error: errorFn })
+    setLogger({ debug: debugFn, info: vi.fn(), warn: warnFn, error: errorFn })
 
     logDebug('debug msg', { a: 1 })
     logWarn('warn msg', { b: 2 })
@@ -73,10 +74,10 @@ describe('Logger functions', () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
 
     logWarn('warn msg')
-    expect(warnSpy).toHaveBeenCalledWith('[mini-codegraph] warn msg', '')
+    expect(warnSpy).toHaveBeenCalledWith('[mini-codegraph] warn msg')
 
     logError('error msg')
-    expect(errorSpy).toHaveBeenCalledWith('[mini-codegraph] error msg', '')
+    expect(errorSpy).toHaveBeenCalledWith('[mini-codegraph] error msg')
 
     warnSpy.mockRestore()
     errorSpy.mockRestore()

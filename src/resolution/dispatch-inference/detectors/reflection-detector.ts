@@ -48,15 +48,6 @@ export class ReflectionDetector implements IDispatchDetector {
     const allNodes = queries.getAllNodes()
     const allEdges = queries.getAllEdges()
 
-    const reflectiveMethods = [
-      'forName', 'newInstance', 'invoke', 'getMethod',
-      'getDeclaredMethod', 'getField', 'getDeclaredField',
-    ]
-
-    const classNodes = allNodes.filter(n =>
-      n.kind === 'class' && n.moduleId === moduleId
-    )
-
     // Pre-compute candidates
     const allCandidates = collectCandidatesForReflectiveLoad(queries, moduleId)
 
@@ -74,7 +65,6 @@ export class ReflectionDetector implements IDispatchDetector {
         const literalArgs = callerChildren.filter(n =>
           n.kind === 'string_literal' ||
           (n.kind !== 'method' && (
-            (n as any).kind === 'literal' ||
             n.name.startsWith('"') || n.name.startsWith("'")
           ))
         )

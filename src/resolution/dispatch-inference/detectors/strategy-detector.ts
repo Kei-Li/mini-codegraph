@@ -1,9 +1,18 @@
 import type { QueryManager } from '../../../db/queries.js'
-import type { MiniCodeGraphNode } from '../../../types.js'
+import type { MiniCodeGraphNode, MiniCodeGraphEdge } from '../../../types.js'
 import type { DispatchPattern, IDispatchDetector, InferredTarget } from '../types.js'
 import { CONFIDENCE } from '../types.js'
 import { traceVariable } from '../variable-tracer.js'
 import type { TracedVariable } from '../variable-tracer.js'
+
+const BAR_W = 20
+
+function showProgress(current: number, total: number, label: string): void {
+  const pct = total > 0 ? Math.min(current / total, 1) : 0
+  const filled = Math.round(pct * BAR_W)
+  const bar = '█'.repeat(filled) + '░'.repeat(BAR_W - filled)
+  process.stderr.write(`\r  · strategy-detector... [${bar}] ${(pct * 100).toFixed(0)}% ${label}`)
+}
 
 function buildTargetsForImplCandidates(
   implCandidates: MiniCodeGraphNode[],
@@ -17,7 +26,6 @@ function buildTargetsForImplCandidates(
     ? parent.name.replace(/Map$/, '')
     : parent?.name ?? ''
 
-  // When we have specific keys matched → higher confidence
   if (trace.possibleKeys.length > 0) {
     const lowerKeys = trace.possibleKeys.map(k => k.toLowerCase())
     const matched = allNodes.filter(n =>
@@ -43,7 +51,6 @@ function buildTargetsForImplCandidates(
     }
   }
 
-  // No specific keys but we have a data source → list all implementations
   const ds = trace.dataSource
   if (ds) {
     return implCandidates.map(impl => ({
@@ -62,7 +69,6 @@ function buildTargetsForImplCandidates(
     }))
   }
 
-  // Fallback: list all implementations with unknown provenance
   return implCandidates.map(impl => ({
     targetId: impl.id,
     targetName: impl.name,
@@ -74,52 +80,155 @@ function buildTargetsForImplCandidates(
   }))
 }
 
+// ── Pre-computed index helpers ────────────────────────────────────────
+
+interface Index {
+  edgesBySource: Map<string, MiniCodeGraphEdge[]>
+  edgesByTarget: Map<string, MiniCodeGraphEdge[]>
+  nodesByParent: Map<string, MiniCodeGraphNode[]>
+}
+
+function buildIndex(allNodes: MiniCodeGraphNode[], allEdges: MiniCodeGraphEdge[]): Index {
+  const edgesBySource = new Map<string, MiniCodeGraphEdge[]>()
+  const edgesByTarget = new Map<string, MiniCodeGraphEdge[]>()
+  const nodesByParent = new Map<string, MiniCodeGraphNode[]>()
+
+  for (const e of allEdges) {
+    let arr = edgesBySource.get(e.sourceId)
+    if (!arr) { edgesBySource.set(e.sourceId, arr = []) }
+    arr.push(e)
+    arr = edgesByTarget.get(e.targetId)
+    if (!arr) { edgesByTarget.set(e.targetId, arr = []) }
+    arr.push(e)
+  }
+
+  for (const n of allNodes) {
+    if (n.parentId) {
+      let arr = nodesByParent.get(n.parentId)
+      if (!arr) { nodesByParent.set(n.parentId, arr = []) }
+      arr.push(n)
+    }
+  }
+
+  return { edgesBySource, edgesByTarget, nodesByParent }
+}
+
+// ── Phase 1: class → implements → interface map ──────────────────────
+
+function buildClassImplementations(
+  allNodes: MiniCodeGraphNode[],
+  idx: Index,
+  queries: QueryManager,
+  moduleId: string,
+): Map<string, { node: MiniCodeGraphNode; id: string }[]> {
+  const map = new Map<string, { node: MiniCodeGraphNode; id: string }[]>()
+  const clsNodes = allNodes.filter(n => n.kind === 'class' && n.moduleId === moduleId)
+  for (let i = 0; i < clsNodes.length; i++) {
+    const node = clsNodes[i]
+    if (i % 2000 === 0) showProgress(i, clsNodes.length, 'building interface→impl map')
+    const impls = (idx.edgesBySource.get(node.id) ?? []).filter(e => e.kind === 'implements')
+    for (const ie of impls) {
+      const iface = queries.getNode(ie.targetId)
+      if (iface) {
+        const name = iface.name
+        if (!map.has(name)) map.set(name, [])
+        map.get(name)!.push({ node, id: node.id })
+      }
+    }
+  }
+  return map
+}
+
+// ── Phase 2: Map.put() caller-level detection ────────────────────────
+
+function detectMapPutPatterns(
+  allNodes: MiniCodeGraphNode[],
+  idx: Index,
+  queries: QueryManager,
+  moduleId: string,
+  patterns: DispatchPattern[],
+): void {
+  const mapPutNodes = allNodes.filter(n => n.name === 'put' && n.language === 'java')
+  for (let i = 0; i < mapPutNodes.length; i++) {
+    const putNode = mapPutNodes[i]
+    if (putNode.moduleId !== moduleId) continue
+    if (i % 500 === 0) showProgress(i, mapPutNodes.length, 'HashMap.put() detection')
+    const callers = queries.getCallers(putNode.id)
+    for (const caller of callers) {
+      if (caller.moduleId !== moduleId) continue
+      const calleeVarEdges = (idx.edgesBySource.get(caller.id) ?? []).filter(e =>
+        (e.kind === 'references' || e.kind === 'calls') && e.targetId !== putNode.id
+      )
+      const targets: InferredTarget[] = calleeVarEdges.map(ce => ({
+        targetId: ce.targetId,
+        targetName: queries.getNode(ce.targetId)?.name ?? ce.targetId,
+        confidence: CONFIDENCE.STRATEGY_MAP_ENUMERATED,
+        provenance: 'strategy_registered',
+        provenanceDetail: `HashMap.put() in ${caller.name}, target: ${queries.getNode(ce.targetId)?.name ?? ce.targetId}`,
+        condition: {
+          source: 'map_key',
+          value: queries.getNode(ce.targetId)?.name ?? '',
+          expression: `HashMap key = "${queries.getNode(ce.targetId)?.name ?? ''}"`,
+        },
+      }))
+      if (targets.length > 0) {
+        patterns.push({
+          type: 'strategy_registered',
+          sourceId: caller.id,
+          sourceName: caller.name,
+          possibleTargets: targets,
+        })
+      }
+    }
+  }
+}
+
+// ── Phase 3: Map.get() key tracing ───────────────────────────────────
+
 function findGetCallsWithKeyTracing(
   queries: QueryManager,
   moduleId: string,
+  idx: Index,
+  allNodes: MiniCodeGraphNode[],
 ): DispatchPattern[] {
   const patterns: DispatchPattern[] = []
-  const allNodes = queries.getAllNodes()
-  const allEdges = queries.getAllEdges()
 
-  // Pre-compute all interface→impls mappings
+  // Build interface→impls map (fast via pre-indexed edges)
   const implsByIface = new Map<string, MiniCodeGraphNode[]>()
-  for (const node of allNodes) {
-    if (node.kind === 'class' && node.moduleId === moduleId) {
-      const impls = allEdges.filter(e =>
-        e.kind === 'implements' && e.sourceId === node.id
-      )
-      for (const ie of impls) {
-        const iface = queries.getNode(ie.targetId)
-        if (iface) {
-          const name = iface.name
-          if (!implsByIface.has(name)) implsByIface.set(name, [])
-          implsByIface.get(name)!.push(node)
-        }
+  const clsNodes = allNodes.filter(n => n.kind === 'class' && n.moduleId === moduleId)
+  for (const node of clsNodes) {
+    const impls = (idx.edgesBySource.get(node.id) ?? []).filter(e => e.kind === 'implements')
+    for (const ie of impls) {
+      const iface = queries.getNode(ie.targetId)
+      if (iface) {
+        const name = iface.name
+        if (!implsByIface.has(name)) implsByIface.set(name, [])
+        implsByIface.get(name)!.push(node)
       }
     }
   }
 
-  // Find Map-related get() calls
   const getCallNodes = allNodes.filter(n =>
     (n.name === 'get' || n.name === 'getOrDefault') &&
     n.kind === 'method' &&
     n.moduleId === moduleId
   )
 
-  for (const getNode of getCallNodes) {
+  for (let g = 0; g < getCallNodes.length; g++) {
+    const getNode = getCallNodes[g]
+    if (g % 200 === 0) showProgress(g, getCallNodes.length, 'Map.get() key tracing')
     const parent = getNode.parentId ? queries.getNode(getNode.parentId) : null
     if (!parent) continue
 
-    const getCallsIncoming = allEdges.filter(e =>
-      e.kind === 'calls' && e.targetId === getNode.id
-    )
+    // Use pre-indexed edges by targetId for incoming calls
+    const getCallsIncoming = (idx.edgesByTarget.get(getNode.id) ?? []).filter(e => e.kind === 'calls')
 
     for (const gc of getCallsIncoming) {
       const caller = queries.getNode(gc.sourceId)
       if (!caller) continue
 
-      const callerChildren = allNodes.filter(n => n.parentId === caller.id)
+      // Use pre-indexed nodes by parentId
+      const callerChildren = idx.nodesByParent.get(caller.id) ?? []
       const argNodes = callerChildren.filter(n =>
         n.kind === 'argument' || n.kind === 'expression'
       )
@@ -128,15 +237,12 @@ function findGetCallsWithKeyTracing(
         const trace = traceVariable(arg.name, caller.id, queries)
         if (!trace) continue
 
-        // Determine interface name
         const interfaceName = parent.name.endsWith('Map')
           ? parent.name.replace(/Map$/, '')
           : parent.name
 
-        // Get all impls of this interface
         const implCandidates = implsByIface.get(interfaceName) ?? []
 
-        // Fallback: collect ALL interface implementations in the module
         const effectiveCandidates = implCandidates.length > 0
           ? implCandidates
           : [...implsByIface.values()].flat().filter(
@@ -152,7 +258,7 @@ function findGetCallsWithKeyTracing(
         if (targets.length === 0) continue
 
         patterns.push({
-          type: targets[0].provenance as any,
+          type: targets[0].provenance,
           sourceId: parent.id,
           sourceName: parent.name,
           interfaceName,
@@ -160,7 +266,7 @@ function findGetCallsWithKeyTracing(
         })
 
         patterns.push({
-          type: targets[0].provenance as any,
+          type: targets[0].provenance,
           sourceId: caller.id,
           sourceName: caller.name,
           interfaceName,
@@ -176,6 +282,8 @@ function findGetCallsWithKeyTracing(
   return patterns
 }
 
+// ── Detector class ────────────────────────────────────────────────────
+
 export class StrategyDetector implements IDispatchDetector {
   name = 'strategy-detector'
 
@@ -184,30 +292,15 @@ export class StrategyDetector implements IDispatchDetector {
     const allNodes = queries.getAllNodes()
     const allEdges = queries.getAllEdges()
 
-    // --- Original Map.put() strategy detection ---
-    const classImplementations = new Map<string, { node: any; id: string }[]>()
-    for (const node of allNodes) {
-      if (node.kind === 'class' && node.moduleId === moduleId) {
-        const impls = allEdges.filter(e =>
-          e.kind === 'implements' && e.sourceId === node.id
-        )
-        if (impls.length > 0) {
-          for (const ie of impls) {
-            const iface = queries.getNode(ie.targetId)
-            if (iface) {
-              if (!classImplementations.has(iface.name)) {
-                classImplementations.set(iface.name, [])
-              }
-              classImplementations.get(iface.name)!.push({ node, id: node.id })
-            }
-          }
-        }
-      }
-    }
+    // Build edge/node index once for all phases
+    const idx = buildIndex(allNodes, allEdges)
+
+    // ── Phase 1: class → implements → interface map ──
+    const classImplementations = buildClassImplementations(allNodes, idx, queries, moduleId)
+    showProgress(1, 1, 'building strategy patterns from interface→impl map')
 
     for (const [ifaceName, impls] of classImplementations) {
       if (impls.length < 2) continue
-
       const targets: InferredTarget[] = impls.map((impl, idx) => ({
         targetId: impl.id,
         targetName: impl.node.name,
@@ -221,7 +314,6 @@ export class StrategyDetector implements IDispatchDetector {
           expression: `${ifaceName} strategy key = "${impl.node.name.toLowerCase()}"`,
         },
       }))
-
       patterns.push({
         type: 'strategy_registered',
         sourceId: '',
@@ -231,51 +323,17 @@ export class StrategyDetector implements IDispatchDetector {
       })
     }
 
-    // --- HashMap.put() caller-level detection ---
-    const mapPutNodes = allNodes.filter(n =>
-      n.name === 'put' && n.language === 'java'
-    )
+    // ── Phase 2: HashMap.put() caller-level detection ──
+    showProgress(0, 1, 'HashMap.put() detection')
+    detectMapPutPatterns(allNodes, idx, queries, moduleId, patterns)
 
-    for (const putNode of mapPutNodes) {
-      if (putNode.moduleId !== moduleId) continue
-      const callers = queries.getCallers(putNode.id)
-      for (const caller of callers) {
-        if (caller.moduleId !== moduleId) continue
-
-        const calleeVarEdges = allEdges.filter(e =>
-          (e.kind === 'references' || e.kind === 'calls') &&
-          e.sourceId === caller.id &&
-          e.targetId !== putNode.id
-        )
-
-        const targets: InferredTarget[] = calleeVarEdges.map(ce => ({
-          targetId: ce.targetId,
-          targetName: queries.getNode(ce.targetId)?.name ?? ce.targetId,
-          confidence: CONFIDENCE.STRATEGY_MAP_ENUMERATED,
-          provenance: 'strategy_registered',
-          provenanceDetail: `HashMap.put() in ${caller.name}, target: ${queries.getNode(ce.targetId)?.name ?? ce.targetId}`,
-          condition: {
-            source: 'map_key',
-            value: queries.getNode(ce.targetId)?.name ?? '',
-            expression: `HashMap key = "${queries.getNode(ce.targetId)?.name ?? ''}"`,
-          },
-        }))
-
-        if (targets.length > 0) {
-          patterns.push({
-            type: 'strategy_registered',
-            sourceId: caller.id,
-            sourceName: caller.name,
-            possibleTargets: targets,
-          })
-        }
-      }
-    }
-
-    // --- NEW: Runtime dispatch via Map.get() key tracing ---
-    const runtimeDispatchPatterns = findGetCallsWithKeyTracing(queries, moduleId)
+    // ── Phase 3: Map.get() key tracing ──
+    showProgress(0, 1, 'Map.get() key tracing')
+    const runtimeDispatchPatterns = findGetCallsWithKeyTracing(queries, moduleId, idx, allNodes)
     patterns.push(...runtimeDispatchPatterns)
 
+    // Clear progress line before final output
+    process.stderr.write('\r' + ' '.repeat(80) + '\r')
     return patterns
   }
 }

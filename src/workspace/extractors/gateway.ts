@@ -21,7 +21,6 @@ function extractServiceName(uri: string): string {
 function parseRouteLocatorJava(content: string): GatewayRoute[] {
   const routes: GatewayRoute[] = []
 
-  const blockStart = content.match(/builder\.routes\s*\(\s*\)\s*\{/)
   const routePattern = /\.route\(\s*"([^"]+)"\s*,\s*(?:\w+\s*->\s*)?(?:r\s*->\s*\{?)\s*/g
   let match: RegExpExecArray | null
 

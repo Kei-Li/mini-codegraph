@@ -1,12 +1,12 @@
-import { readFileSync, statSync } from 'node:fs'
-import { join, relative } from 'node:path'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import type { QueryManager } from '../db/queries.js'
-import type { GraphQueryManager } from '../graph/queries.js'
 import type { MiniCodeGraphNode } from '../types.js'
+import type { BfsResult } from '../graph/traversal.js'
 import { OutputBudget, classifyFilePath } from './budget.js'
 import { formatContextAsMarkdown } from './formatter.js'
 import { collapsePolymorphicSiblings, formatPolymorphGroup, type CollapsedGroup } from './polymorph.js'
-import { computePathRelevance } from '../generated.js'
+
 
 type QM = QueryManager
 
@@ -29,13 +29,17 @@ export interface ContextSymbol {
   collapsedSiblings?: { name: string; filePath: string }[]
 }
 
+export interface ContextGraph {
+  findPath(fromId: string, toId: string, maxDepth?: number, maxNodes?: number): BfsResult
+}
+
 export class ContextBuilder {
   private queries: QM
-  private graph: GraphQueryManager
+  private graph: ContextGraph
   private projectRoot: string
   private budget: OutputBudget
 
-  constructor(queries: QM, graph: GraphQueryManager, projectRoot: string) {
+  constructor(queries: QM, graph: ContextGraph, projectRoot: string) {
     this.queries = queries
     this.graph = graph
     this.projectRoot = projectRoot
@@ -212,7 +216,7 @@ export class ContextBuilder {
     }
   }
 
-  private expandGraph(nodes: MiniCodeGraphNode[], terms: string[]): MiniCodeGraphNode[] {
+  private expandGraph(nodes: MiniCodeGraphNode[], _terms: string[]): MiniCodeGraphNode[] {
     const expanded = new Map<string, MiniCodeGraphNode>()
     for (const n of nodes) expanded.set(n.id, n)
 
@@ -220,7 +224,6 @@ export class ContextBuilder {
       const callers = this.queries.getCallers(n.id)
       for (const c of callers) {
         if (!expanded.has(c.id) && expanded.size < this.budget.totalBudget * 2) {
-          const callerScore = terms.some(t => c.name.toLowerCase().includes(t.toLowerCase())) ? 0.5 : 0.1
           expanded.set(c.id, c)
         }
       }
@@ -321,6 +324,7 @@ export class ContextBuilder {
       let code = ''
       try {
         const absPath = join(this.projectRoot, n.filePath)
+
         if (n.endLine > 0 && n.startLine > 0) {
           const content = readFileSync(absPath, 'utf-8')
           const lines = content.split('\n')

@@ -2,6 +2,8 @@ import { describe, it, expect, vi } from 'vitest'
 import { createTools } from '../src/mcp/tools.js'
 import type { GraphQueryManager } from '../src/graph/queries.js'
 
+vi.mock('node:child_process', () => ({ execFileSync: vi.fn() }))
+
 function createMockGraph(overrides: Partial<GraphQueryManager> = {}): GraphQueryManager {
   const mockQueries = {
     getAllNodes: vi.fn().mockReturnValue([]),
@@ -65,16 +67,21 @@ describe('MCP tools', () => {
       expect(names).toContain('mini_cg_node')
       expect(names).toContain('mini_cg_impact')
       expect(names).toContain('mini_cg_files')
+      expect(names).toContain('mini_cg_file_content')
       expect(names).toContain('mini_cg_status')
-      expect(names).toContain('mini_cg_explore')
       expect(names).toContain('mini_cg_architecture')
       expect(names).toContain('mini_cg_feign')
       expect(names).toContain('mini_cg_mybatis')
       expect(names).toContain('mini_cg_module')
-      expect(names).toContain('mini_cg_react')
-      expect(names).toContain('mini_cg_mongo')
-      expect(names).toContain('mini_cg_redis')
-      expect(names).toContain('mini_cg_sql')
+      expect(names).toContain('mini_cg_backtrace')
+      expect(names).toContain('mini_cg_page_trace')
+      expect(names).toContain('mini_cg_service_trace')
+      expect(names).toContain('mini_cg_workspace_status')
+      expect(names).toContain('mini_cg_explore')
+      expect(names).toContain('mini_cg_dispatch')
+      expect(names).toContain('mini_cg_semantic_search')
+      expect(names).toContain('mini_cg_history')
+      expect(names).toContain('mini_cg_lint')
     })
 
     it('every tool has name, description, inputSchema, and handler', () => {
@@ -137,8 +144,14 @@ describe('MCP tools', () => {
 
   describe('mini_cg_status', () => {
     it('returns stats from graph', async () => {
-      const graph = createMockGraph({
+      const queriesMock = {
         getStats: vi.fn().mockReturnValue({ files: 42, nodes: 100, edges: 200, modules: 3 }),
+        getAllNodes: vi.fn().mockReturnValue([]),
+        getAllModules: vi.fn().mockReturnValue([]),
+        getAllExternalSymbols: vi.fn().mockReturnValue([]),
+      }
+      const graph = createMockGraph({
+        getQueries: vi.fn().mockReturnValue(queriesMock),
       })
       const tools = createTools(graph)
       const tool = tools.find(t => t.name === 'mini_cg_status')!
@@ -276,40 +289,6 @@ describe('MCP tools', () => {
 
       const result = await tool.handler({ detail: false }, graph)
       expect(result.moduleCount).toBe(2)
-    })
-  })
-
-  describe('mini_cg_explore', () => {
-    it('returns message when no symbols', async () => {
-      const graph = createMockGraph()
-      const tools = createTools(graph)
-      const tool = tools.find(t => t.name === 'mini_cg_explore')!
-
-      const result = await tool.handler({ symbols: [] }, graph)
-      expect(result).toBe('No symbols provided.')
-    })
-
-    it('searches and groups by file', async () => {
-      const graph = createMockGraph({
-        search: vi.fn().mockReturnValue([{
-          node: { id: '1', name: 'UserService', kind: 'class', filePath: 'src/UserService.ts', startLine: 1, endLine: 50 },
-          snippets: [],
-          score: 1,
-        }]),
-        findRelated: vi.fn().mockReturnValue(new Map([
-          ['1', {
-            node: { id: '1', name: 'UserService', kind: 'class', filePath: 'src/UserService.ts', startLine: 1, endLine: 50 },
-            relationships: ['calledBy → AuthService', 'calls → UserRepository'],
-          }],
-        ])),
-      })
-      const tools = createTools(graph)
-      const tool = tools.find(t => t.name === 'mini_cg_explore')!
-
-      const result = await tool.handler({ symbols: ['UserService'], maxPerSymbol: 10 }, graph)
-      expect(result).toContain('UserService')
-      expect(result).toContain('src/UserService.ts')
-      expect(result).toContain('calledBy')
     })
   })
 
@@ -452,67 +431,109 @@ describe('MCP tools', () => {
     })
   })
 
-  describe('mini_cg_mongo', () => {
-    it('returns mongo entities', async () => {
+  describe('mini_cg_history', () => {
+    it('returns error when no symbol or filePath', async () => {
+      const graph = createMockGraph()
+      const tools = createTools(graph)
+      const tool = tools.find(t => t.name === 'mini_cg_history')!
+
+      const result = await tool.handler({}, graph)
+      expect(result.error).toBe('Either symbol or filePath is required')
+    })
+
+    it('returns error when symbol not found', async () => {
+      const graph = createMockGraph({ search: vi.fn().mockReturnValue([]) })
+      const tools = createTools(graph)
+      const tool = tools.find(t => t.name === 'mini_cg_history')!
+
+      const result = await tool.handler({ symbol: 'NonExistent' }, graph)
+      expect(result.error).toBe('Either symbol or filePath is required')
+    })
+
+    it('returns commits for a valid file', async () => {
+      const { execFileSync } = await import('node:child_process')
+      const mockOutput = [
+        'abc123|Alice|alice@test.com|2024-03-15 10:00:00 +0800|fix: resolve NPE in getOrder',
+        'def456|Bob|bob@test.com|2024-03-14 09:00:00 +0800|feat: add order validation',
+      ].join('\n')
+      vi.mocked(execFileSync).mockReturnValueOnce(mockOutput)
+
+      const graph = createMockGraph()
+      const tools = createTools(graph)
+      const tool = tools.find(t => t.name === 'mini_cg_history')!
+
+      const result = await tool.handler({ filePath: __filename, maxCommits: 10 }, graph)
+      expect(result.commits).toHaveLength(2)
+      expect(result.commits[0].hash).toBe('abc123')
+      expect(result.commits[0].author).toBe('Alice')
+      expect(result.commits[1].message).toBe('feat: add order validation')
+      expect(result.totalCommits).toBe(2)
+    })
+
+    it('handles empty git history', async () => {
+      const { execFileSync } = await import('node:child_process')
+      vi.mocked(execFileSync).mockReturnValueOnce('')
+
+      const graph = createMockGraph()
+      const tools = createTools(graph)
+      const tool = tools.find(t => t.name === 'mini_cg_history')!
+
+      const result = await tool.handler({ filePath: __filename }, graph)
+      expect(result.commits).toEqual([])
+      expect(result.totalCommits).toBe(0)
+    })
+  })
+
+  describe('mini_cg_affected_tests', () => {
+    it('returns error when sourceFiles empty', async () => {
+      const graph = createMockGraph()
+      const tools = createTools(graph)
+      const tool = tools.find(t => t.name === 'mini_cg_affected_tests')!
+
+      const result = await tool.handler({ sourceFiles: [] }, graph)
+      expect(result.error).toBe('sourceFiles is required')
+    })
+
+    it('returns affected test files with confidence', async () => {
       const graph = createMockGraph({
-        getMongoEntities: vi.fn().mockReturnValue([
-          { entityName: 'User', collection: 'users', filePath: 'User.java' },
+        findAffectedTestFiles: vi.fn().mockReturnValue([
+          { testFile: 'src/UserServiceTest.java', matchedSymbols: ['getUser', 'saveUser'], confidence: 0.8 },
+          { testFile: 'src/OrderServiceTest.java', matchedSymbols: ['getUser'], confidence: 0.3 },
         ]),
       })
       const tools = createTools(graph)
-      const tool = tools.find(t => t.name === 'mini_cg_mongo')!
+      const tool = tools.find(t => t.name === 'mini_cg_affected_tests')!
 
-      const result = await tool.handler({ limit: 10 }, graph)
-      expect(result.mongoEntities).toHaveLength(1)
+      const result = await tool.handler({ sourceFiles: ['src/UserService.java'], limit: 10 }, graph)
+      expect(result.results).toHaveLength(2)
+      expect(result.results[0].testFile).toBe('src/UserServiceTest.java')
+      expect(result.results[0].confidence).toBe(0.8)
     })
-  })
 
-  describe('mini_cg_redis', () => {
-    it('returns redis hashes and templates', async () => {
+    it('filters by minConfidence', async () => {
       const graph = createMockGraph({
-        getRedisHashes: vi.fn().mockReturnValue([{ hashName: 'UserHash', filePath: 'a.java' }]),
-        getRedisTemplates: vi.fn().mockReturnValue([{ templateName: 'redisTemplate', filePath: 'b.java' }]),
-      })
-      const tools = createTools(graph)
-      const tool = tools.find(t => t.name === 'mini_cg_redis')!
-
-      const result = await tool.handler({ limit: 10 }, graph)
-      expect(result.redisHashes).toHaveLength(1)
-      expect(result.redisTemplates).toHaveLength(1)
-    })
-  })
-
-  describe('mini_cg_sql', () => {
-    it('returns tables and statements', async () => {
-      const graph = createMockGraph({
-        getSqlTables: vi.fn().mockReturnValue([{ tableName: 'users', filePath: 'ddl.sql' }]),
-        getSqlStatements: vi.fn().mockReturnValue([{ statement: 'SELECT * FROM users', filePath: 'mapper.xml' }]),
-      })
-      const tools = createTools(graph)
-      const tool = tools.find(t => t.name === 'mini_cg_sql')!
-
-      const result = await tool.handler({ limit: 10 }, graph)
-      expect(result.tables).toHaveLength(1)
-      expect(result.sqlStatements).toHaveLength(1)
-    })
-  })
-
-  describe('mini_cg_react', () => {
-    it('returns components, stores, and queries', async () => {
-      const graph = createMockGraph({
-        getReactComponents: vi.fn().mockReturnValue([
-          { componentName: 'App', filePath: 'App.tsx', hooks: ['useState'] },
+        findAffectedTestFiles: vi.fn().mockReturnValue([
+          { testFile: 'src/UserServiceTest.java', matchedSymbols: ['getUser'], confidence: 0.8 },
+          { testFile: 'src/UtilTest.java', matchedSymbols: ['helper'], confidence: 0.2 },
         ]),
-        getReactStores: vi.fn().mockReturnValue([{ storeName: 'userStore', filePath: 'store.ts' }]),
-        getReactQueries: vi.fn().mockReturnValue([{ queryName: 'useUsers', filePath: 'queries.ts' }]),
       })
       const tools = createTools(graph)
-      const tool = tools.find(t => t.name === 'mini_cg_react')!
+      const tool = tools.find(t => t.name === 'mini_cg_affected_tests')!
 
-      const result = await tool.handler({ detail: false, limit: 10 }, graph)
-      expect(result.components).toHaveLength(1)
-      expect(result.stores).toHaveLength(1)
-      expect(result.queries).toHaveLength(1)
+      const result = await tool.handler({ sourceFiles: ['src/UserService.java'], minConfidence: 0.5 }, graph)
+      expect(result.results).toHaveLength(1)
+      expect(result.results[0].testFile).toBe('src/UserServiceTest.java')
+    })
+  })
+
+  describe('tool count', () => {
+    it('includes mini_cg_history and mini_cg_affected_tests in tool list', () => {
+      const graph = createMockGraph()
+      const tools = createTools(graph)
+      const names = tools.map(t => t.name)
+
+      expect(names).toContain('mini_cg_history')
+      expect(names).toContain('mini_cg_affected_tests')
     })
   })
 })

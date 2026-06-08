@@ -2,12 +2,12 @@ import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { IExtractor, ExtractionOutput } from './frameworks.js'
 import type { QueryManager } from '../../db/queries.js'
-import { findOpenApiFiles, parseOpenApiFile } from '../../extraction/openapi-parser.js'
+import { findOpenApiFiles, parseOpenApiFile } from '../../extraction/infra/openapi-parser.js'
 
 export class OpenApiExtractor implements IExtractor {
   name = 'openapi'
 
-  async extract(projectRoot: string, queries: QueryManager): Promise<ExtractionOutput> {
+  async extract(projectRoot: string, _queries: QueryManager): Promise<ExtractionOutput> {
     const provides: ExtractionOutput['provides'] = []
     const consumes: ExtractionOutput['consumes'] = []
 

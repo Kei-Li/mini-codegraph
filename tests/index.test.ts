@@ -3,7 +3,7 @@ import { mkdtempSync, existsSync, readFileSync, writeFileSync, rmSync, mkdirSync
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-vi.mock('../src/extraction/orchestrator.js', () => {
+vi.mock('../src/extraction/core/orchestrator.js', () => {
   class MockExtractionOrchestrator {
     constructor(db: any, queries: any) {}
     async init() {}
@@ -61,7 +61,8 @@ describe('MiniCodeGraph', () => {
     })
 
     it('open returns instance when DB exists', () => {
-      MiniCodeGraph.init(tmpDir)
+      const first = MiniCodeGraph.init(tmpDir)
+      first.close()
       const cg = MiniCodeGraph.open(tmpDir)
       expect(cg).toBeInstanceOf(MiniCodeGraph)
       cg.close()

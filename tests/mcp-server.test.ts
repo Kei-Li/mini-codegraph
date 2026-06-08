@@ -19,6 +19,13 @@ function createMockTransport(): { transport: Transport; onMessage: any; onClose:
 }
 
 function createMockGraph(): GraphQueryManager {
+  const queriesMock = {
+    getStats: vi.fn().mockReturnValue({ files: 0, nodes: 0, edges: 0, modules: 0 }),
+    getAllNodes: vi.fn().mockReturnValue([]),
+    getAllModules: vi.fn().mockReturnValue([]),
+    getAllExternalSymbols: vi.fn().mockReturnValue([]),
+    getAllFiles: vi.fn().mockReturnValue([]),
+  }
   return {
     search: vi.fn().mockReturnValue([]),
     getCallers: vi.fn().mockReturnValue([]),
@@ -32,14 +39,11 @@ function createMockGraph(): GraphQueryManager {
     getMyBatisMappings: vi.fn().mockReturnValue([]),
     getFileListing: vi.fn().mockReturnValue([]),
     getStats: vi.fn().mockReturnValue({ files: 0, nodes: 0, edges: 0, modules: 0 }),
-    getReactComponents: vi.fn().mockReturnValue([]),
-    getReactStores: vi.fn().mockReturnValue([]),
-    getReactQueries: vi.fn().mockReturnValue([]),
-    getMongoEntities: vi.fn().mockReturnValue([]),
-    getRedisHashes: vi.fn().mockReturnValue([]),
-    getRedisTemplates: vi.fn().mockReturnValue([]),
-    getSqlTables: vi.fn().mockReturnValue([]),
-    getSqlStatements: vi.fn().mockReturnValue([]),
+    getQueries: vi.fn().mockReturnValue(queriesMock),
+    getBacktrace: vi.fn().mockReturnValue({ paths: [], foundEntry: false, rootNodeId: '', rootNodeName: '' }),
+    getPageFanoutTraces: vi.fn().mockReturnValue({ routePath: '', pageFile: '', branches: [], involvedServices: [] }),
+    getPageFanoutByRoute: vi.fn().mockReturnValue(undefined),
+    getServiceTrace: vi.fn().mockReturnValue({ service: '', entryPoints: [], outgoingCalls: [], incomingCalls: [], dependentServices: [], stats: { totalEntryPoints: 0, totalNodes: 0, totalFiles: 0 } }),
     checkStaleFiles: vi.fn(),
     getNode: vi.fn(),
     getRoutes: vi.fn().mockReturnValue([]),

@@ -1,10 +1,7 @@
-import { existsSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
-import type { ToolDefinition } from '../tools.js'
-import type { QueryManager } from '../../db/queries.js'
+import { existsSync } from 'node:fs'
+import type { ToolDefinition } from '../tools/shared.js'
 
 interface WorkspaceStatusHandlerOptions {
-  queries?: QueryManager
   workspaceRoot?: string
 }
 
@@ -16,8 +13,8 @@ export function createWorkspaceStatusHandler(opts?: WorkspaceStatusHandlerOption
       type: 'object',
       properties: {},
     },
-    handler: async (args, graph) => {
-      const queries = opts?.queries ?? graph.getQueries()
+    handler: async (_args, graph) => {
+      const queries = graph.getQueries()
       const workspaceRoot = opts?.workspaceRoot
 
       const externalSymbols = queries.getAllExternalSymbols()

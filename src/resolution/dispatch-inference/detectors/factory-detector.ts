@@ -51,8 +51,6 @@ export class FactoryDetector implements IDispatchDetector {
   async detect(queries: QueryManager, moduleId: string, _allModuleIds: string[]): Promise<DispatchPattern[]> {
     const patterns: DispatchPattern[] = []
     const allNodes = queries.getAllNodes()
-    const allEdges = queries.getAllEdges()
-
     const methods = allNodes.filter(n =>
       (n.kind === 'method' || n.kind === 'function') &&
       n.moduleId === moduleId

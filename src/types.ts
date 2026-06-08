@@ -193,6 +193,52 @@ export interface FullTrace {
   httpMethod: string
 }
 
+export interface FanoutHop {
+  kind: 'component' | 'vue_api_call' | 'gateway_route' | 'controller_endpoint'
+       | 'feign_call' | 'service_method' | 'repository_method' | 'mybatis_mapper'
+       | 'sql_statement' | 'database_table' | 'mq_publish' | 'mq_subscribe' | 'cache_access'
+  name: string
+  moduleId?: string
+  filePath?: string
+  detail: string
+}
+
+export interface PageFanoutBranch {
+  method: string
+  path: string
+  sourceComponent: string
+  trace: FanoutHop[]
+}
+
+export interface PageFanoutTrace {
+  routePath: string
+  routeName?: string
+  pageFile: string
+  branches: PageFanoutBranch[]
+  involvedServices: string[]
+}
+
+export interface BacktraceHop {
+  id: string
+  name: string
+  kind: string
+  filePath: string
+  detail: string
+}
+
+export interface BacktracePath {
+  hops: BacktraceHop[]
+  entryPointKind: string
+  entryPointPath?: string
+}
+
+export interface BacktraceResult {
+  paths: BacktracePath[]
+  foundEntry: boolean
+  rootNodeId: string
+  rootNodeName: string
+}
+
 export interface ConfigPropertyBinding {
   configClass: string
   prefix: string
@@ -265,4 +311,134 @@ export interface WorkspaceProject {
   detectedAt: number
   provides: ExternalSymbol[]
   consumes: { symbolId: string; referenceType: string; sourceLocation: string }[]
+}
+
+export interface ServiceTraceHop {
+  kind: 'controller_endpoint' | 'service_method' | 'mybatis_mapper' | 'sql_statement' | 'mq_publish' | 'cache_access'
+  name: string
+  filePath?: string
+  detail: string
+}
+
+export interface ServiceTraceEntry {
+  kind: 'rest_endpoint' | 'mq_listener' | 'scheduled_task' | 'page_entry'
+  httpMethod?: string
+  path?: string
+  queueName?: string
+  cronExpr?: string
+  method: string
+  filePath: string
+  line: number
+  signature: string
+  internalTrace: ServiceTraceHop[]
+}
+
+export interface ServiceTraceResult {
+  service: string
+  moduleInfo?: { rootPath: string; buildSystem: string; language: string }
+  entryPoints: ServiceTraceEntry[]
+  outgoingCalls: { targetService: string; kind: string; endpoint: string }[]
+  incomingCalls: { sourceService: string; kind: string; endpoint: string }[]
+  dependentServices: string[]
+  stats: { totalEntryPoints: number; totalNodes: number; totalFiles: number }
+}
+
+// Used by GraphQueryManager summary methods
+export interface MapStructMapperSummary {
+  interfaceName: string
+  methods: {
+    methodName: string
+    sourceType: string
+    targetType: string
+    fieldMappings: { source: string; target: string }[]
+  }[]
+}
+
+export interface AutoConfigSummary {
+  className: string
+  filePath: string
+  conditions: ConditionInfo[]
+  autoConfigureAfter: string[]
+  autoConfigureBefore: string[]
+}
+
+export interface ConditionInfo {
+  type: string
+  value: string
+  matchIfMissing: boolean
+}
+
+export interface MavenModuleSummary {
+  artifactId: string
+  qualifiedName: string
+  dependencies: {
+    groupId: string
+    artifactId: string
+    version: string
+    scope: string
+    optional: boolean
+  }[]
+  submodules: string[]
+}
+
+export interface MavenScopeConflict {
+  artifactKey: string
+  scopes: string[]
+  modules: string[]
+}
+
+export interface GradleModuleSummary {
+  name: string
+  dependencies: { group: string; artifact: string; version: string; configuration: string; isProject: boolean }[]
+  submodules: { name: string; path: string }[]
+}
+
+export interface CloudConfigSummary {
+  className: string
+  filePath: string
+  refreshScope: boolean
+  configKey?: string
+}
+
+export interface LoadBalancerClientSummary {
+  className: string
+  fieldName: string
+  serviceName?: string
+}
+
+export interface LbUriSummary {
+  uri: string
+  targetService: string
+}
+
+export interface GraphQLEndpointSummary {
+  className: string
+  methodName: string
+  field: string
+  returnType: string
+  kind: string
+}
+
+export interface WebSocketEndpointSummary {
+  className: string
+  methodName: string
+  destination: string
+  kind: string
+}
+
+export interface TestAnnotationSummary {
+  className: string
+  filePath: string
+  annotation: string
+  mockBeans: string[]
+}
+
+export interface AsyncMethodSummary {
+  className: string
+  methodName: string
+  kind: 'async' | 'scheduled'
+  cron?: string
+  fixedRate?: number
+  fixedDelay?: number
+  executor?: string
 }

@@ -9,11 +9,27 @@ export interface ScannedProject {
   frameworks: string[]
 }
 
+export interface ScannerOptions {
+  includeProjects?: string[]    // glob patterns for inclusive filter (empty = all)
+  excludeProjects?: string[]   // glob patterns for exclusive filter
+}
+
+function matchesAny(name: string, patterns: string[]): boolean {
+  return patterns.some(p => {
+    if (p === name) return true
+    if (p.endsWith('*') && name.startsWith(p.slice(0, -1))) return true
+    if (p.startsWith('*') && name.endsWith(p.slice(1))) return true
+    return false
+  })
+}
+
 export class WorkspaceScanner {
   private workspaceRoot: string
+  private options: ScannerOptions
 
-  constructor(workspaceRoot: string) {
+  constructor(workspaceRoot: string, options: ScannerOptions = {}) {
     this.workspaceRoot = resolve(workspaceRoot)
+    this.options = options
   }
 
   scan(): ScannedProject[] {
@@ -27,6 +43,15 @@ export class WorkspaceScanner {
       if (!entry.isDirectory()) continue
       if (entry.name.startsWith('.')) continue
       const projectPath = join(this.workspaceRoot, entry.name)
+
+      // Apply include/exclude filters
+      if (this.options.includeProjects && this.options.includeProjects.length > 0) {
+        if (!matchesAny(entry.name, this.options.includeProjects)) continue
+      }
+      if (this.options.excludeProjects && this.options.excludeProjects.length > 0) {
+        if (matchesAny(entry.name, this.options.excludeProjects)) continue
+      }
+
       if (seenPaths.has(projectPath)) continue
       seenPaths.add(projectPath)
 
@@ -39,6 +64,13 @@ export class WorkspaceScanner {
       // Recursively discover Maven/Gradle sub-modules inside monorepo
       const subModules = this.discoverSubModules(projectPath, seenPaths)
       for (const sm of subModules) {
+        // Apply filters to sub-modules too
+        if (this.options.includeProjects && this.options.includeProjects.length > 0) {
+          if (!matchesAny(sm.name, this.options.includeProjects)) continue
+        }
+        if (this.options.excludeProjects && this.options.excludeProjects.length > 0) {
+          if (matchesAny(sm.name, this.options.excludeProjects)) continue
+        }
         const smProject = this.detectProject(sm.path, sm.name)
         if (smProject) projects.push(smProject)
       }

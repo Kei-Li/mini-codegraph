@@ -51,11 +51,10 @@ export function collapsePolymorphicSiblings(
   const addedSiblings = new Set<string>()
 
   let groupsAdded = 0
-  for (const [ifaceId, siblings] of interfaceMap) {
+  for (const [, siblings] of interfaceMap) {
     if (groupsAdded >= maxGroups) break
     if (siblings.length < 2) continue
 
-    const iface = queries.getNode(ifaceId)
     const representative = siblings[0]
 
     result.push({

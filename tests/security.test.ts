@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { safeJsonParse, validatePathWithinRoot } from '../src/utils.js'
-import { detectWasmCrash, isTurboshaftOOM } from '../src/extraction/wasm-runtime-flags.js'
+import { detectWasmCrash, isTurboshaftOOM } from '../src/extraction/core/wasm-runtime-flags.js'
 
 describe('safeJsonParse - prototype pollution prevention', () => {
   it('strips __proto__ at top level', () => {

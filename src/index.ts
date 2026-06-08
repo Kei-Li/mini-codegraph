@@ -1,17 +1,18 @@
-import { join, relative } from 'node:path'
-import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs'
+import { join } from 'node:path'
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { DatabaseConnection } from './db/connection.js'
 import { QueryManager } from './db/queries.js'
-import { ExtractionOrchestrator } from './extraction/orchestrator.js'
+import { ExtractionOrchestrator } from './extraction/core/orchestrator.js'
 import { GraphQueryManager } from './graph/queries.js'
 import { FileWatcher } from './sync/watcher.js'
 import type { PendingFile } from './sync/watcher.js'
-import type { ExtractionResult, ModuleInfo, FileRecord } from './types.js'
-import { findFiles, loadGitignore, computeContentHash, scanDirectory, getGitChangedFiles, FileLock } from './utils.js'
-import { detectRoutes } from './extraction/routes.js'
+import type { ExtractionResult, ModuleInfo } from './types.js'
+import { syncProject } from './sync/sync-service.js'
+import { detectRoutes } from './extraction/core/routes.js'
 import { detectSpring } from './resolution/frameworks/java.js'
 import { detectVue } from './resolution/frameworks/vue.js'
-import { findMulitModuleProjects } from './resolution/frameworks/java.js'
+import { findMultiModuleProjects } from './resolution/frameworks/java.js'
+import { FileLock } from './utils.js'
 
 export interface ProjectConfig {
   exclude: string[]
@@ -29,24 +30,51 @@ export class MiniCodeGraph {
   private projectRoot: string
   private dataDir: string
   private config: ProjectConfig
-  private daemonMode = false
-  private multiModule = false
-  private moduleIds: string[] = []
+  private static signalRegistered = false
+  private static instances = new Set<MiniCodeGraph>()
+  private lock: FileLock
 
   constructor(projectRoot: string, dbPath?: string) {
     this.projectRoot = projectRoot
     this.dataDir = join(projectRoot, '.mini-codegraph')
     const resolvedDbPath = dbPath ?? join(this.dataDir, 'mini-codegraph.db')
 
-    this.db = new DatabaseConnection(resolvedDbPath)
-    this.db.open()
-    this.queries = new QueryManager(this.db)
-    this.orchestrator = new ExtractionOrchestrator(this.db, this.queries)
-    this.graphManager = new GraphQueryManager(this.queries, projectRoot)
-    this.config = this.loadConfig()
+    if (!existsSync(this.dataDir)) {
+      mkdirSync(this.dataDir, { recursive: true })
+    }
+    this.lock = new FileLock(join(this.dataDir, 'mini-codegraph.lock'))
+    this.lock.acquire()
+
+    try {
+      this.db = new DatabaseConnection(resolvedDbPath)
+      this.db.open()
+      this.queries = new QueryManager(this.db)
+      this.orchestrator = new ExtractionOrchestrator(this.db, this.queries)
+      this.graphManager = new GraphQueryManager(this.queries, projectRoot)
+      this.config = this.loadConfig()
+
+      MiniCodeGraph.instances.add(this)
+      MiniCodeGraph.registerSignalHandlers()
+    } catch (e) {
+      this.lock.release()
+      throw e
+    }
   }
 
-  static init(projectRoot: string, indexNow = false, workspace?: string): MiniCodeGraph {
+  private static registerSignalHandlers(): void {
+    if (MiniCodeGraph.signalRegistered) return
+    MiniCodeGraph.signalRegistered = true
+    const handleSignal = () => {
+      for (const instance of MiniCodeGraph.instances) {
+        instance.close()
+      }
+      process.exit(0)
+    }
+    process.on('SIGINT', handleSignal)
+    process.on('SIGTERM', handleSignal)
+  }
+
+  static init(projectRoot: string, _indexNow = false, workspace?: string): MiniCodeGraph {
     const cg = new MiniCodeGraph(projectRoot)
     cg.ensureConfig()
     if (workspace) {
@@ -98,7 +126,7 @@ export class MiniCodeGraph {
 
   static initMultiModule(parentDir: string): { cg: MiniCodeGraph; modules: ModuleInfo[] } {
     const cg = new MiniCodeGraph(parentDir)
-    const moduleDirs = findMulitModuleProjects(parentDir)
+    const moduleDirs = findMultiModuleProjects(parentDir)
 
     const modules: ModuleInfo[] = moduleDirs.map((dir: string) => {
       const name = dir.split(/[/\\]/).pop() || 'unknown'
@@ -133,9 +161,6 @@ export class MiniCodeGraph {
       cg.queries.insertModule(mod)
     }
 
-    cg.multiModule = true
-    cg.moduleIds = modules.map(m => m.id)
-
     return { cg, modules }
   }
 
@@ -155,117 +180,20 @@ export class MiniCodeGraph {
     }
   }
 
-  async index(excludePatterns?: string[]): Promise<ExtractionResult> {
+  async index(excludePatterns?: string[], fastMode = false): Promise<ExtractionResult> {
     await this.orchestrator.init()
     const patterns = [...(this.config.exclude ?? []), ...(excludePatterns ?? [])]
-    return this.orchestrator.indexProject(this.projectRoot, undefined, patterns)
+    return this.orchestrator.indexProject(this.projectRoot, undefined, patterns, false, fastMode)
   }
 
-  async indexMultiModule(excludePatterns?: string[]): Promise<ExtractionResult> {
+  async indexMultiModule(excludePatterns?: string[], fastMode = false): Promise<ExtractionResult> {
     await this.orchestrator.init()
     const patterns = [...(this.config.exclude ?? []), ...(excludePatterns ?? [])]
-    return this.orchestrator.indexMultiModule(this.projectRoot, patterns)
+    return this.orchestrator.indexMultiModule(this.projectRoot, patterns, fastMode)
   }
 
   async sync(): Promise<ExtractionResult> {
-    await this.orchestrator.init()
-    const lock = new FileLock(join(this.dataDir, '.lock'))
-    return lock.withLockAsync(async () => {
-    const result: ExtractionResult = { nodes: [], edges: [], errors: [] }
-
-    const gitChanges = getGitChangedFiles(this.projectRoot)
-
-    if (gitChanges) {
-      // Fast path: git status --porcelain
-      const trackedFiles = new Map(this.queries.getAllFiles().map(f => [f.path, f]))
-
-      for (const filePath of gitChanges.deleted) {
-        const tracked = trackedFiles.get(filePath)
-        if (tracked) {
-          this.queries.deleteNodesForFile(filePath)
-          result.edges.push() // placeholder for counting
-        }
-      }
-
-      for (const filePath of [...gitChanges.modified, ...gitChanges.added]) {
-        const fullPath = join(this.projectRoot, filePath)
-        let content: string
-        try {
-          content = readFileSync(fullPath, 'utf-8')
-        } catch { continue }
-
-        const contentHash = computeContentHash(content)
-        const tracked = trackedFiles.get(filePath)
-
-        if (tracked && tracked.contentHash === contentHash) continue
-
-        try {
-          const fileResult = await this.orchestrator.indexFile(fullPath, this.projectRoot)
-          result.nodes.push(...fileResult.nodes)
-          result.edges.push(...fileResult.edges)
-        } catch (e) {
-          result.errors.push(`Error indexing ${filePath}: ${e}`)
-        }
-      }
-
-      return result
-    }
-
-    // Fallback: full filesystem scan (non-git project or git failure)
-    const currentFiles = scanDirectory(this.projectRoot)
-    const currentSet = new Set(currentFiles)
-    const indexedFiles = this.queries.getAllFiles()
-    const indexedMap = new Map(indexedFiles.map(f => [f.path, f]))
-
-    // Removals
-    for (const tracked of indexedFiles) {
-      if (!currentSet.has(tracked.path) || !existsSync(join(this.projectRoot, tracked.path))) {
-        this.queries.deleteNodesForFile(tracked.path)
-      }
-    }
-
-    // Adds / modifications
-    for (const filePath of currentFiles) {
-      const fullPath = join(this.projectRoot, filePath)
-      const tracked = indexedMap.get(filePath)
-
-      // Stat pre-filter (size + mtime)
-      if (tracked) {
-        try {
-          const stat = statSync(fullPath)
-          if (stat.size === tracked.size && Math.floor(stat.mtimeMs) === Math.floor(tracked.modifiedAt)) {
-            continue
-          }
-        } catch { continue }
-      }
-
-      let content: string
-      try {
-        content = readFileSync(fullPath, 'utf-8')
-      } catch { continue }
-
-      const contentHash = computeContentHash(content)
-
-      if (tracked && tracked.contentHash === contentHash) continue
-
-      // Large file skip (>5MB)
-      if (content.length > 5_242_880) {
-        console.warn(`[warn] File exceeds size limit: ${filePath} (${(content.length / 1024 / 1024).toFixed(1)}MB, limit 5MB)`)
-        result.errors.push(`Skipped large file: ${filePath} (${(content.length / 1024 / 1024).toFixed(1)}MB)`)
-        continue
-      }
-
-      try {
-        const fileResult = await this.orchestrator.indexFile(fullPath, this.projectRoot)
-        result.nodes.push(...fileResult.nodes)
-        result.edges.push(...fileResult.edges)
-      } catch (e) {
-        result.errors.push(`Error indexing ${filePath}: ${e}`)
-      }
-    }
-
-    return result
-    })
+    return syncProject(this.queries, this.orchestrator, this.projectRoot, this.dataDir)
   }
 
   async indexFile(filePath: string): Promise<ExtractionResult> {
@@ -294,7 +222,7 @@ export class MiniCodeGraph {
   }
 
   getRoutes() {
-    return detectRoutes(this.projectRoot, this.queries, this.graphManager)
+    return detectRoutes(this.projectRoot, this.queries)
   }
 
   getFrameworks(): string[] {
@@ -303,7 +231,7 @@ export class MiniCodeGraph {
     if (spring) frameworks.push(spring.name)
 
     const parentDir = this.projectRoot
-    const moduleDirs = findMulitModuleProjects(parentDir)
+    const moduleDirs = findMultiModuleProjects(parentDir)
     for (const dir of moduleDirs) {
       const subSpring = detectSpring(dir)
       if (subSpring && !frameworks.includes(subSpring.name)) frameworks.push(subSpring.name)
@@ -318,8 +246,6 @@ export class MiniCodeGraph {
   }
 
   enableDaemon(): void {
-    this.daemonMode = true
-
     this.watcher = new FileWatcher(
       this.projectRoot,
       async () => {
@@ -362,5 +288,6 @@ export class MiniCodeGraph {
     this.orchestrator.stopWorkers()
     this.watcher?.stop()
     this.db.close()
+    this.lock.release()
   }
 }

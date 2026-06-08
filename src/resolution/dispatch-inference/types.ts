@@ -1,5 +1,3 @@
-import type { MiniCodeGraphNode } from '../../types.js'
-
 export type DispatchProvenance =
   | 'static_direct'
   | 'autowired_unique'
@@ -54,6 +52,7 @@ export interface DispatchResult {
   stats: {
     totalEdges: number
     totalPatterns: number
+    filteredTargets?: number
     byProvenance: Record<string, number>
   }
 }

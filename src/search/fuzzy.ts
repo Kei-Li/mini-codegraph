@@ -1,5 +1,4 @@
 const MAX_EDIT_DISTANCE = 3
-const CACHE_SIZE = 500
 
 export function damerauLevenshtein(a: string, b: string): number {
   const an = a.length

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { EXTRACTOR_GUARDS, sourceIncludesAny, shouldRunExtractor } from '../src/extraction/orchestrator.js'
+import { EXTRACTOR_GUARDS, sourceIncludesAny, shouldRunExtractor } from '../src/extraction/core/extractor-guards.js'
 
 describe('ExtractionOrchestrator', () => {
   describe('shouldRunExtractor', () => {

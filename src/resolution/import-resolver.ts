@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import type { QueryManager } from '../db/queries.js'
 import type { MiniCodeGraphNode } from '../types.js'
@@ -124,7 +124,7 @@ export function extractJavaImports(source: string): ImportMapping[] {
   return mappings
 }
 
-export function extractTypeScriptImports(source: string, filePath: string): ImportMapping[] {
+export function extractTypeScriptImports(source: string, _filePath: string): ImportMapping[] {
   const mappings: ImportMapping[] = []
 
   const importRegex = /import\s+(?:(?:\{[^}]*\})\s+from\s+|(?:\*\s+as\s+\w+\s+from\s+)|(?:\w+\s+from\s+))['"]([^'"]+)['"]/g
@@ -180,7 +180,7 @@ export function resolveViaImportChain(
   refName: string,
   sourceFile: string,
   fileImports: ImportMapping[],
-  sourceModuleId: string
+  _sourceModuleId: string
 ): MiniCodeGraphNode | null {
   for (const imp of fileImports) {
     if (imp.localName === refName) {

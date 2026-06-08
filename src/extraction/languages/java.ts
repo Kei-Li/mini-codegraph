@@ -1,4 +1,4 @@
-import Parser from 'web-tree-sitter'
+import type Parser from 'web-tree-sitter'
 
 export interface NodeInfo {
   kind: string
@@ -57,7 +57,7 @@ export function parseJavaFile(
     }
 
     if (nodeType === 'class_declaration' || nodeType === 'interface_declaration' || nodeType === 'enum_declaration') {
-      const nameNode = node.namedChildren.find((c: any) => c.type === 'identifier' || c.type === 'name')
+      const nameNode = node.namedChildren.find((c: Parser.SyntaxNode) => c.type === 'identifier' || c.type === 'name')
       const name = nameNode?.text ?? 'Unknown'
       const parentId = classStack.length > 0 ? classStack[classStack.length - 1] : null
       const nodeId = `${filePath}:${name}:${range.startLine}`
@@ -103,7 +103,7 @@ export function parseJavaFile(
     }
 
     if (nodeType === 'method_declaration' || nodeType === 'constructor_declaration') {
-      const nameNode = node.namedChildren.find((c: any) => c.type === 'identifier' || c.type === 'name')
+      const nameNode = node.namedChildren.find((c: Parser.SyntaxNode) => c.type === 'identifier' || c.type === 'name')
       const name = nameNode?.text ?? (nodeType === 'constructor_declaration' ? getCurrentClassName(classStack, nodes) : 'Unknown')
       const parentId = classStack.length > 0 ? classStack[classStack.length - 1] : null
       const nodeId = `${filePath}:${name}:${range.startLine}`
@@ -112,8 +112,8 @@ export function parseJavaFile(
       const annotations = extractAnnotationsFor(lines, range.startLine)
 
       const params = node.namedChildren
-        .filter((c: any) => c.type === 'formal_parameters')
-        .flatMap((c: any) => c.namedChildren.map((p: any) => p.text))
+        .filter((c: Parser.SyntaxNode) => c.type === 'formal_parameters')
+        .flatMap((c: Parser.SyntaxNode) => c.namedChildren.map((p: Parser.SyntaxNode) => p.text))
         .join(', ')
 
       const signature = `${visibility} ${name}(${params})`.trim()
@@ -147,8 +147,8 @@ export function parseJavaFile(
 
     if (nodeType === 'field_declaration') {
       const parentId = classStack.length > 0 ? classStack[classStack.length - 1] : null
-      const declarator = node.namedChildren.find((c: any) => c.type === 'variable_declarator')
-      const name = declarator?.namedChildren.find((c: any) => c.type === 'identifier')?.text ?? 'unknown'
+      const declarator = node.namedChildren.find((c: Parser.SyntaxNode) => c.type === 'variable_declarator')
+      const name = declarator?.namedChildren.find((c: Parser.SyntaxNode) => c.type === 'identifier')?.text ?? 'unknown'
       const nodeId = `${filePath}:${name}:${range.startLine}`
       const visibility = findVisibility(lines, range.startLine)
       const annotations = extractAnnotationsFor(lines, range.startLine)
@@ -179,7 +179,7 @@ export function parseJavaFile(
     }
 
     if (nodeType === 'method_invocation') {
-      const nameNode = node.namedChildren.find((c: any) => c.type === 'identifier' || c.type === 'name')
+      const nameNode = node.namedChildren.find((c: Parser.SyntaxNode) => c.type === 'identifier' || c.type === 'name')
       if (!nameNode) return
       const callName = nameNode.text
 
@@ -195,7 +195,7 @@ export function parseJavaFile(
         })
       }
 
-      const objectNode = node.namedChildren.find((c: any) =>
+      const objectNode = node.namedChildren.find((c: Parser.SyntaxNode) =>
         c.type === 'object_identifier' || c.type === 'scoped_identifier' || c.type === 'member_expression'
       )
       if (objectNode) {
@@ -219,7 +219,7 @@ export function parseJavaFile(
     }
 
     if (nodeType === 'object_creation_expression') {
-      const typeNode = node.namedChildren.find((c: any) => c.type === 'type' || c.type === 'type_identifier')
+      const typeNode = node.namedChildren.find((c: Parser.SyntaxNode) => c.type === 'type' || c.type === 'type_identifier')
       if (!typeNode) return
       const callerId = findEnclosingMethod(node, filePath)
       if (callerId) {
@@ -339,11 +339,11 @@ function getCurrentClassName(classStack: string[], _nodes: NodeInfo[]): string {
   return getNodeName(classStack[classStack.length - 1])
 }
 
-function findEnclosingMethod(node: any, filePath: string): string | null {
+function findEnclosingMethod(node: Parser.SyntaxNode, filePath: string): string | null {
   let p = node.parent
   while (p) {
     if (p.type === 'method_declaration' || p.type === 'constructor_declaration') {
-      const nameChild = p.namedChildren.find((c: any) => c.type === 'identifier' || c.type === 'name')
+      const nameChild = p.namedChildren.find((c: Parser.SyntaxNode) => c.type === 'identifier' || c.type === 'name')
       const name = nameChild?.text ?? 'Unknown'
       return `${filePath}:${name}:${p.startPosition.row + 1}`
     }

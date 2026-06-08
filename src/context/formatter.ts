@@ -1,4 +1,4 @@
-import type { MiniCodeGraphNode } from '../types.js'
+
 
 export function formatContextAsMarkdown(
   task: string,
@@ -103,9 +103,9 @@ export function formatContextAsMarkdown(
 
 export function formatContextAsJSON(
   task: string,
-  symbols: any[],
+  symbols: unknown[],
   stats: { totalFiles: number; modules: number; nodes: number; edges: number },
-  routes?: any[]
+  routes?: unknown[]
 ): string {
   return JSON.stringify({ task, symbols, stats, routes }, null, 2)
 }

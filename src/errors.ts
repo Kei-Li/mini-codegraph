@@ -88,27 +88,46 @@ export class LockError extends MiniCodeGraphError {
 }
 
 export interface Logger {
-  debug(message: string, context?: Record<string, unknown>): void
-  warn(message: string, context?: Record<string, unknown>): void
-  error(message: string, context?: Record<string, unknown>): void
+  debug(message: string, context?: unknown): void
+  info(message: string, context?: unknown): void
+  warn(message: string, context?: unknown): void
+  error(message: string, context?: unknown): void
+}
+
+function formatContext(context?: unknown): string {
+  if (context === undefined || context === null) return ''
+  if (typeof context === 'string') return context
+  if (context instanceof Error) return context.message
+  if (typeof context === 'object') {
+    try { return JSON.stringify(context) } catch { return String(context) }
+  }
+  return String(context)
 }
 
 export const defaultLogger: Logger = {
-  debug(message: string, context?: Record<string, unknown>) {
+  debug(message: string, context?: unknown) {
     if (process.env.MINI_CG_DEBUG) {
-      console.debug(`[mini-codegraph] ${message}`, context ?? '')
+      const ctx = formatContext(context)
+      console.debug(`[mini-codegraph] ${message}${ctx ? ' ' + ctx : ''}`)
     }
   },
-  warn(message: string, context?: Record<string, unknown>) {
-    console.warn(`[mini-codegraph] ${message}`, context ?? '')
+  info(message: string, context?: unknown) {
+    const ctx = formatContext(context)
+    console.info(`[mini-codegraph] ${message}${ctx ? ' ' + ctx : ''}`)
   },
-  error(message: string, context?: Record<string, unknown>) {
-    console.error(`[mini-codegraph] ${message}`, context ?? '')
+  warn(message: string, context?: unknown) {
+    const ctx = formatContext(context)
+    console.warn(`[mini-codegraph] ${message}${ctx ? ' ' + ctx : ''}`)
+  },
+  error(message: string, context?: unknown) {
+    const ctx = formatContext(context)
+    console.error(`[mini-codegraph] ${message}${ctx ? ' ' + ctx : ''}`)
   },
 }
 
 export const silentLogger: Logger = {
   debug() {},
+  info() {},
   warn() {},
   error() {},
 }
@@ -123,14 +142,14 @@ export function getLogger(): Logger {
   return currentLogger
 }
 
-export function logDebug(message: string, context?: Record<string, unknown>): void {
+export function logDebug(message: string, context?: unknown): void {
   currentLogger.debug(message, context)
 }
 
-export function logWarn(message: string, context?: Record<string, unknown>): void {
+export function logWarn(message: string, context?: unknown): void {
   currentLogger.warn(message, context)
 }
 
-export function logError(message: string, context?: Record<string, unknown>): void {
+export function logError(message: string, context?: unknown): void {
   currentLogger.error(message, context)
 }

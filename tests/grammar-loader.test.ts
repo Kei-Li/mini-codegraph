@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { GrammarLoader } from '../src/extraction/grammar-loader.js'
+import { GrammarLoader } from '../src/extraction/core/grammar-loader.js'
 
 describe('GrammarLoader', () => {
   let loader: GrammarLoader

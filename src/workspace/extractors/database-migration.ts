@@ -1,4 +1,4 @@
-import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { IExtractor, ExtractionOutput } from './frameworks.js'
 import type { QueryManager } from '../../db/queries.js'
@@ -13,7 +13,7 @@ interface MigrationFile {
 export class DatabaseMigrationExtractor implements IExtractor {
   name = 'database-migration'
 
-  async extract(projectRoot: string, queries: QueryManager): Promise<ExtractionOutput> {
+  async extract(projectRoot: string, _queries: QueryManager): Promise<ExtractionOutput> {
     const provides: ExtractionOutput['provides'] = []
     const consumes: ExtractionOutput['consumes'] = []
 

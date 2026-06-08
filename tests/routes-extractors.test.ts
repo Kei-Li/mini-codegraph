@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
-import { detectRestTemplateCalls } from '../src/extraction/routes.js'
+import { detectRestTemplateCalls } from '../src/extraction/core/routes.js'
 import { parseJavaFileWithRegex } from '../src/extraction/languages/java.js'
-import { extractVueApiCalls, resolveVueApiToController } from '../src/extraction/vue-api-mapper.js'
+import { extractVueApiCalls, resolveVueApiToController } from '../src/extraction/frontend/vue-api-mapper.js'
 
 // ───── RestTemplate URL 解析 ─────
 

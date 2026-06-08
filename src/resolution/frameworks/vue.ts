@@ -2,7 +2,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { QueryManager } from '../../db/queries.js'
 import type { MiniCodeGraphNode, UnresolvedReference, FrameworkDetectionResult } from '../../types.js'
-import { matchReference } from '../name-matcher.js'
+
 
 const VUE_COMPILER_MACROS = new Set([
   'defineProps', 'defineEmits', 'defineExpose', 'defineOptions',
@@ -92,7 +92,7 @@ function resolveVueComponent(
   queries: QueryManager,
   componentName: string,
   sourceFile: string,
-  moduleId: string
+  _moduleId: string
 ): MiniCodeGraphNode | null {
   const sourceDir = sourceFile.substring(0, sourceFile.lastIndexOf('/'))
 
@@ -104,7 +104,6 @@ function resolveVueComponent(
     )
   if (sameDirComponents.length > 0) return sameDirComponents[0]
 
-  const kebabName = componentName.replace(/([A-Z])/g, '-$1').toLowerCase().replace(/^-/, '')
   const vueFileMatches = queries.searchNodes(componentName, 20)
     .filter(n => n.filePath.endsWith('.vue') || n.filePath.endsWith('.tsx'))
   if (vueFileMatches.length > 0) return vueFileMatches[0]
@@ -132,8 +131,6 @@ export function parseVueTemplate(templateContent: string): VueTemplateInfo {
   const eventBindings: { event: string; handler: string; line: number }[] = []
   const slotUsages: string[] = []
   const directives: string[] = []
-
-  const lines = templateContent.split('\n')
 
   const tagRegex = /<(\/?)([A-Z][a-zA-Z]*)([^>]*)\/?>/g
   let m: RegExpExecArray | null
@@ -205,7 +202,6 @@ export function extractVueRouterRoutes(projectRoot: string): {
     if (!existsSync(rf)) continue
     try {
       const content = readFileSync(rf, 'utf-8')
-      const lines = content.split('\n')
 
       const routePattern = /\{\s*path:\s*['"](.+?)['"]\s*(?:,\s*name:\s*['"](.+?)['"])?\s*,?\s*(?:component|children|redirect)/g
       let m: RegExpExecArray | null

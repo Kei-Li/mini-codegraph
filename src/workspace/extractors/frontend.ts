@@ -2,10 +2,7 @@ import { readFileSync, existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { IExtractor, ExtractionOutput } from './frameworks.js'
 import type { QueryManager } from '../../db/queries.js'
-
-function safeJsonParse(text: string): any {
-  try { return JSON.parse(text) } catch { return {} }
-}
+import { safeJsonParse } from '../../utils.js'
 
 function collectFiles(dir: string, ext: string): string[] {
   const files: string[] = []
@@ -19,35 +16,6 @@ function collectFiles(dir: string, ext: string): string[] {
     }
   } catch { /* silent */ }
   return files
-}
-
-function detectBaseUrl(projectRoot: string): string[] {
-  const urls: string[] = []
-  const envFiles = ['.env', '.env.development', '.env.production', '.env.local']
-  for (const f of envFiles) {
-    const fp = join(projectRoot, f)
-    if (existsSync(fp)) {
-      try {
-        const content = readFileSync(fp, 'utf-8')
-        const m = content.match(/(?:VITE_)?API_BASE_URL\s*=\s*["']?(https?:\/\/[^"'\s]+)["']?/)
-        if (m) urls.push(m[1])
-      } catch { /* silent */ }
-    }
-  }
-  const configFiles = ['vite.config.ts', 'vite.config.js', 'next.config.js', 'proxy.conf.json']
-  for (const f of configFiles) {
-    const fp = join(projectRoot, f)
-    if (existsSync(fp)) {
-      try {
-        const content = readFileSync(fp, 'utf-8')
-        const m = content.match(/target\s*:\s*["'](https?:\/\/[^"']+)["']/)
-        if (m) urls.push(m[1])
-        const m2 = content.match(/proxy\s*:\s*\{[^}]*?target\s*:\s*["'](https?:\/\/[^"']+)["']/)
-        if (m2) urls.push(m2[1])
-      } catch { /* silent */ }
-    }
-  }
-  return urls
 }
 
 function scanApiCallsInSource(content: string): string[] {

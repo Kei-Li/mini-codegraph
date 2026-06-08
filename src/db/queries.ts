@@ -2,7 +2,11 @@ import type { DatabaseConnection } from './connection.js'
 import type { MiniCodeGraphNode, MiniCodeGraphEdge, FileRecord, ModuleInfo, UnresolvedReference } from '../types.js'
 import * as Q from './schema.js'
 
-function mapRowToNode(row: Record<string, any>): MiniCodeGraphNode {
+// SQLite row result — columns are dynamic, so access is untyped
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type SqliteRow = Record<string, any>
+
+function mapRowToNode(row: SqliteRow): MiniCodeGraphNode {
   return {
     id: row.id,
     kind: row.kind,
@@ -24,7 +28,7 @@ function mapRowToNode(row: Record<string, any>): MiniCodeGraphNode {
   }
 }
 
-function mapRowToFile(row: Record<string, any>): FileRecord {
+function mapRowToFile(row: SqliteRow): FileRecord {
   return {
     path: row.path,
     contentHash: row.content_hash,
@@ -36,7 +40,7 @@ function mapRowToFile(row: Record<string, any>): FileRecord {
   }
 }
 
-function mapRowToModule(row: Record<string, any>): ModuleInfo {
+function mapRowToModule(row: SqliteRow): ModuleInfo {
   return {
     id: row.id,
     name: row.name,
@@ -58,6 +62,26 @@ export class QueryManager {
   private pendingFiles: (FileRecord & { moduleId?: string })[] = []
   private pendingDeletes: string[] = []
   private pendingAnnotations: { id: string; nodeId: string; annotationName: string; value: string; line: number; moduleId: string }[] = []
+
+  // Read cache for heavy read-only operations (e.g. dispatch inference).
+  // Cache is populated lazily by getAllNodes()/getAllEdges() when enabled.
+  private _readCacheEnabled = false
+  private _cachedAllNodes: MiniCodeGraphNode[] | null = null
+  private _cachedAllEdges: ReturnType<QueryManager['getAllEdges']> | null = null
+
+  /** Enable the read cache so getAllNodes()/getAllEdges() skip repeated SQLite queries. */
+  enableReadCache(): void {
+    this._readCacheEnabled = true
+    this._cachedAllNodes = null
+    this._cachedAllEdges = null
+  }
+
+  /** Disable read cache and free cached data. */
+  flushReadCache(): void {
+    this._readCacheEnabled = false
+    this._cachedAllNodes = null
+    this._cachedAllEdges = null
+  }
 
   enableBatchMode(): void { this.batchMode = true }
 
@@ -108,8 +132,14 @@ export class QueryManager {
     }
 
     if (this.pendingFiles.length > 0) {
+      const cols = 'path,content_hash,language,size,modified_at,indexed_at,node_count,module_id'
+      const rows: string[] = []
       for (const f of this.pendingFiles) {
-        sqls.push(`INSERT INTO files (path,content_hash,language,size,modified_at,indexed_at,node_count,module_id) VALUES (${[e(f.path), e(f.contentHash), e(f.language), f.size, f.modifiedAt, f.indexedAt, f.nodeCount, e(f.moduleId ?? '')].join(',')}) ON CONFLICT(path) DO UPDATE SET content_hash=excluded.content_hash,size=excluded.size,modified_at=excluded.modified_at,indexed_at=excluded.indexed_at,node_count=excluded.node_count`)
+        rows.push(`(${[e(f.path), e(f.contentHash), e(f.language), f.size, f.modifiedAt, f.indexedAt, f.nodeCount, e(f.moduleId ?? '')].join(',')})`)
+      }
+      const CHUNK = 2000
+      for (let i = 0; i < rows.length; i += CHUNK) {
+        sqls.push(`INSERT OR REPLACE INTO files (${cols}) VALUES ${rows.slice(i, i + CHUNK).join(',')}`)
       }
       this.pendingFiles = []
     }
@@ -127,8 +157,13 @@ export class QueryManager {
       this.pendingAnnotations = []
     }
 
+    // Execute SQL in incremental chunks to avoid O(n²) string concatenation
     if (sqls.length > 0) {
-      this.db.exec(sqls.join('; '))
+      const MAX_CHUNK = 50
+      for (let i = 0; i < sqls.length; i += MAX_CHUNK) {
+        const chunk = sqls.slice(i, i + MAX_CHUNK)
+        this.db.exec(chunk.join('; '))
+      }
     }
   }
 
@@ -139,60 +174,90 @@ export class QueryManager {
   searchNodes(query: string, limit = 20): MiniCodeGraphNode[] {
     const safe = this.sanitizeFts5(query)
     if (!safe) return []
-    const stmt = this.db.prepare(Q.SEARCH_NODES)
-    const rows = stmt.all(safe, limit) as Record<string, any>[]
-    return rows.map(mapRowToNode)
+    try {
+      const stmt = this.db.prepare(Q.SEARCH_NODES)
+      const rows = stmt.all(safe, limit) as SqliteRow[]
+      return rows.map(mapRowToNode)
+    } catch {
+      return this.fallbackSearch(safe, limit).map(r => r.node)
+    }
   }
 
   searchNodesWithRank(query: string, limit = 20): { node: MiniCodeGraphNode; rank: number }[] {
     const safe = this.sanitizeFts5(query)
     if (!safe) return []
-    const stmt = this.db.prepare(Q.SEARCH_NODES)
-    const rows = stmt.all(safe, limit) as Record<string, any>[]
-    return rows.map(r => ({ node: mapRowToNode(r), rank: r.rank as number }))
+    try {
+      const stmt = this.db.prepare(Q.SEARCH_NODES)
+      const rows = stmt.all(safe, limit) as SqliteRow[]
+      return rows.map(r => ({ node: mapRowToNode(r), rank: r.rank as number }))
+    } catch {
+      return this.fallbackSearch(safe, limit)
+    }
+  }
+
+  private fallbackSearch(query: string, limit = 20): { node: MiniCodeGraphNode; rank: number }[] {
+    const words = query.split(/\s+/).filter(Boolean)
+    if (words.length === 0) return []
+    const conditions = words.map(() => '(name LIKE ? OR qualified_name LIKE ? OR file_path LIKE ?)').join(' AND ')
+    const params: string[] = []
+    for (const w of words) {
+      const p = `%${w}%`
+      params.push(p, p, p)
+    }
+    try {
+      const stmt = this.db.prepare(`SELECT * FROM nodes WHERE ${conditions} LIMIT ?`)
+      const rows = stmt.all(...params, limit) as SqliteRow[]
+      return rows.map((r, i) => ({ node: mapRowToNode(r), rank: rows.length - i }))
+    } catch {
+      return []
+    }
   }
 
   searchNodesByModule(query: string, moduleId: string, limit = 20): MiniCodeGraphNode[] {
     const safe = this.sanitizeFts5(query)
     if (!safe) return []
-    const stmt = this.db.prepare(Q.SEARCH_NODES_BY_MODULE)
-    const rows = stmt.all(safe, moduleId, limit) as Record<string, any>[]
-    return rows.map(mapRowToNode)
+    try {
+      const stmt = this.db.prepare(Q.SEARCH_NODES_BY_MODULE)
+      const rows = stmt.all(safe, moduleId, limit) as SqliteRow[]
+      return rows.map(mapRowToNode)
+    } catch {
+      return this.fallbackSearch(safe, limit).map(r => r.node)
+    }
   }
 
   getNode(id: string): MiniCodeGraphNode | undefined {
     const stmt = this.db.prepare(Q.GET_NODE_BY_ID)
-    const row = stmt.get(id) as Record<string, any> | undefined
+    const row = stmt.get(id) as SqliteRow | undefined
     return row ? mapRowToNode(row) : undefined
   }
 
   getNodesByFile(filePath: string): MiniCodeGraphNode[] {
     const stmt = this.db.prepare(Q.GET_NODES_BY_FILE)
-    const rows = stmt.all(filePath) as Record<string, any>[]
+    const rows = stmt.all(filePath) as SqliteRow[]
     return rows.map(mapRowToNode)
   }
 
   getCallers(nodeId: string): MiniCodeGraphNode[] {
     const stmt = this.db.prepare(Q.GET_CALLERS)
-    const rows = stmt.all(nodeId) as Record<string, any>[]
+    const rows = stmt.all(nodeId) as SqliteRow[]
     return rows.map(mapRowToNode)
   }
 
   getCallees(nodeId: string): MiniCodeGraphNode[] {
     const stmt = this.db.prepare(Q.GET_CALLEES)
-    const rows = stmt.all(nodeId) as Record<string, any>[]
+    const rows = stmt.all(nodeId) as SqliteRow[]
     return rows.map(mapRowToNode)
   }
 
   getImports(nodeId: string): MiniCodeGraphNode[] {
     const stmt = this.db.prepare(Q.GET_IMPORTS)
-    const rows = stmt.all(nodeId) as Record<string, any>[]
+    const rows = stmt.all(nodeId) as SqliteRow[]
     return rows.map(mapRowToNode)
   }
 
   getChildren(parentId: string): MiniCodeGraphNode[] {
     const stmt = this.db.prepare(Q.GET_CHILDREN)
-    const rows = stmt.all(parentId) as Record<string, any>[]
+    const rows = stmt.all(parentId) as SqliteRow[]
     return rows.map(mapRowToNode)
   }
 
@@ -204,49 +269,66 @@ export class QueryManager {
 
   getFileRecord(filePath: string): FileRecord | undefined {
     const stmt = this.db.prepare(Q.GET_FILE)
-    const row = stmt.get(filePath) as Record<string, any> | undefined
+    const row = stmt.get(filePath) as SqliteRow | undefined
     return row ? mapRowToFile(row) : undefined
   }
 
   getAllFiles(): FileRecord[] {
     const stmt = this.db.prepare(Q.GET_ALL_FILES)
-    const rows = stmt.all() as Record<string, any>[]
+    const rows = stmt.all() as SqliteRow[]
     return rows.map(mapRowToFile)
   }
 
   getFilesByModule(moduleId: string): FileRecord[] {
     const stmt = this.db.prepare(Q.GET_FILES_BY_MODULE)
-    const rows = stmt.all(moduleId) as Record<string, any>[]
+    const rows = stmt.all(moduleId) as SqliteRow[]
     return rows.map(mapRowToFile)
   }
 
   getAllNodes(): MiniCodeGraphNode[] {
+    if (this._readCacheEnabled) {
+      if (this._cachedAllNodes) return this._cachedAllNodes
+      const stmt = this.db.prepare(Q.GET_ALL_NODES)
+      const rows = stmt.all() as SqliteRow[]
+      this._cachedAllNodes = rows.map(mapRowToNode)
+      return this._cachedAllNodes
+    }
     const stmt = this.db.prepare(Q.GET_ALL_NODES)
-    const rows = stmt.all() as Record<string, any>[]
+    const rows = stmt.all() as SqliteRow[]
     return rows.map(mapRowToNode)
   }
 
   getNodesByKind(kind: string, limit?: number): MiniCodeGraphNode[] {
     const stmt = this.db.prepare(limit ? `${Q.GET_NODES_BY_KIND} LIMIT ?` : Q.GET_NODES_BY_KIND)
     const rows = limit ? stmt.all(kind, limit) : stmt.all(kind)
-    return (rows as Record<string, any>[]).map(mapRowToNode)
+    return (rows as SqliteRow[]).map(mapRowToNode)
   }
 
   getNodesByQualifiedName(qname: string): MiniCodeGraphNode[] {
     const stmt = this.db.prepare(Q.GET_NODES_BY_QUALIFIED_NAME)
-    const rows = stmt.all(qname) as Record<string, any>[]
+    const rows = stmt.all(qname) as SqliteRow[]
     return rows.map(mapRowToNode)
   }
 
   getFileDependencies(filePath: string): string[] {
     const stmt = this.db.prepare(Q.GET_FILE_DEPENDENCIES)
-    const rows = stmt.all(filePath) as Record<string, any>[]
+    const rows = stmt.all(filePath) as SqliteRow[]
     return rows.map(r => r.file_path)
   }
 
   getAllEdges(): MiniCodeGraphEdge[] {
+    if (this._readCacheEnabled) {
+      if (this._cachedAllEdges) return this._cachedAllEdges
+      const stmt = this.db.prepare('SELECT * FROM edges')
+      const rows = stmt.all() as SqliteRow[]
+      this._cachedAllEdges = rows.map(r => ({
+        sourceId: r.source, targetId: r.target, kind: r.kind,
+        metadata: r.metadata ?? '{}', line: r.line ?? 0, col: r.col ?? 0,
+      }))
+      return this._cachedAllEdges
+    }
     const stmt = this.db.prepare('SELECT * FROM edges')
-    const rows = stmt.all() as Record<string, any>[]
+    const rows = stmt.all() as SqliteRow[]
     return rows.map(r => ({
       sourceId: r.source, targetId: r.target, kind: r.kind,
       metadata: r.metadata ?? '{}', line: r.line ?? 0, col: r.col ?? 0,
@@ -255,7 +337,7 @@ export class QueryManager {
 
   getEdgesByType(kind: string): { sourceId: string; targetId: string; metadata: string }[] {
     const stmt = this.db.prepare('SELECT * FROM edges WHERE kind = ?')
-    const rows = stmt.all(kind) as Record<string, any>[]
+    const rows = stmt.all(kind) as SqliteRow[]
     return rows.map(r => ({
       sourceId: r.source, targetId: r.target,
       metadata: r.metadata ?? '{}',
@@ -263,10 +345,10 @@ export class QueryManager {
   }
 
   getStats(): { files: number; nodes: number; edges: number; modules: number } {
-    const files = this.db.prepare(Q.COUNT_FILES).get() as Record<string, any>
-    const nodes = this.db.prepare(Q.COUNT_NODES).get() as Record<string, any>
-    const edges = this.db.prepare(Q.COUNT_EDGES).get() as Record<string, any>
-    const modules = this.db.prepare('SELECT COUNT(*) as count FROM modules').get() as Record<string, any>
+    const files = this.db.prepare(Q.COUNT_FILES).get() as SqliteRow
+    const nodes = this.db.prepare(Q.COUNT_NODES).get() as SqliteRow
+    const edges = this.db.prepare(Q.COUNT_EDGES).get() as SqliteRow
+    const modules = this.db.prepare('SELECT COUNT(*) as count FROM modules').get() as SqliteRow
     return { files: files.count, nodes: nodes.count, edges: edges.count, modules: modules?.count ?? 0 }
   }
 
@@ -333,7 +415,7 @@ export class QueryManager {
 
   getUnresolvedRefs(): UnresolvedReference[] {
     const stmt = this.db.prepare(Q.GET_UNRESOLVED_REFS)
-    const rows = stmt.all() as Record<string, any>[]
+    const rows = stmt.all() as SqliteRow[]
     return rows.map(r => ({
       id: r.id,
       sourceNodeId: r.source_node_id,
@@ -354,7 +436,7 @@ export class QueryManager {
 
   getAllModules(): ModuleInfo[] {
     const stmt = this.db.prepare(Q.GET_ALL_MODULES)
-    const rows = stmt.all() as Record<string, any>[]
+    const rows = stmt.all() as SqliteRow[]
     return rows.map(mapRowToModule)
   }
 
@@ -370,21 +452,33 @@ export class QueryManager {
 
   getAnnotationsByNode(nodeId: string): { annotationName: string; value: string }[] {
     const stmt = this.db.prepare(Q.GET_ANNOTATIONS_BY_NODE)
-    const rows = stmt.all(nodeId) as Record<string, any>[]
+    const rows = stmt.all(nodeId) as SqliteRow[]
     return rows.map(r => ({ annotationName: r.annotation_name, value: r.value }))
+  }
+
+  getAllAnnotations(): Map<string, { annotationName: string; value: string }[]> {
+    const stmt = this.db.prepare('SELECT node_id, annotation_name, value FROM annotations')
+    const rows = stmt.all() as { node_id: string; annotation_name: string; value: string }[]
+    const map = new Map<string, { annotationName: string; value: string }[]>()
+    for (const r of rows) {
+      let arr = map.get(r.node_id)
+      if (!arr) { arr = []; map.set(r.node_id, arr) }
+      arr.push({ annotationName: r.annotation_name, value: r.value })
+    }
+    return map
   }
 
   getNodesByAnnotation(annotationName: string, limit?: number): MiniCodeGraphNode[] {
     const stmt = this.db.prepare(limit ? `${Q.GET_NODES_BY_ANNOTATION} LIMIT ?` : Q.GET_NODES_BY_ANNOTATION)
     const rows = limit ? stmt.all(annotationName, limit) : stmt.all(annotationName)
-    return (rows as Record<string, any>[]).map(mapRowToNode)
+    return (rows as SqliteRow[]).map(mapRowToNode)
   }
 
   getNodesByIdPrefix(prefix: string, limit?: number): MiniCodeGraphNode[] {
     const sql = limit ? Q.GET_NODES_BY_ID_PREFIX_LIMIT : Q.GET_NODES_BY_ID_PREFIX
     const stmt = this.db.prepare(sql)
     const rows = limit ? stmt.all(prefix, limit) : stmt.all(prefix)
-    return (rows as Record<string, any>[]).map(mapRowToNode)
+    return (rows as SqliteRow[]).map(mapRowToNode)
   }
 
   insertExternalSymbol(id: string, name: string, kind: string, providingService: string, definitionFile: string, signature: string, metadata: string): void {
@@ -399,7 +493,7 @@ export class QueryManager {
 
   getExternalSymbolsByService(serviceName: string): { id: string; name: string; kind: string; providingService: string; signature: string }[] {
     const stmt = this.db.prepare(Q.GET_EXTERNAL_SYMBOLS_BY_SERVICE)
-    const rows = stmt.all(serviceName) as Record<string, any>[]
+    const rows = stmt.all(serviceName) as SqliteRow[]
     return rows.map(r => ({
       id: r.id, name: r.name, kind: r.kind,
       providingService: r.providing_service,
@@ -409,26 +503,27 @@ export class QueryManager {
 
   getExternalReferencesBySymbol(symbolId: string): { id: number; sourceLocation: string; referenceType: string; targetService: string }[] {
     const stmt = this.db.prepare(Q.GET_EXTERNAL_REFS_BY_SYMBOL)
-    const rows = stmt.all(symbolId) as Record<string, any>[]
+    const rows = stmt.all(symbolId) as SqliteRow[]
     return rows.map(r => ({
       id: r.id, sourceLocation: r.source_location,
       referenceType: r.reference_type, targetService: r.target_service,
     }))
   }
 
-  getAllExternalSymbols(): { id: string; name: string; kind: string; serviceName?: string; signature?: string }[] {
+  getAllExternalSymbols(): { id: string; name: string; kind: string; serviceName?: string; signature?: string; version?: number }[] {
     const stmt = this.db.prepare(Q.GET_ALL_EXTERNAL_SYMBOLS)
-    const rows = stmt.all() as Record<string, any>[]
+    const rows = stmt.all() as SqliteRow[]
     return rows.map(r => ({
       id: r.id, name: r.name, kind: r.kind,
       serviceName: r.providing_service,
       signature: r.signature ?? '',
+      version: r.version as number | undefined,
     }))
   }
 
   getAllExternalReferences(): { id: string; sourceLocation: string; symbolName: string; serviceName?: string; sourceService?: string; referenceType?: string; detail?: string; sourceSymbol: string }[] {
     const stmt = this.db.prepare(Q.GET_ALL_EXTERNAL_REFERENCES)
-    const rows = stmt.all() as Record<string, any>[]
+    const rows = stmt.all() as SqliteRow[]
     return rows.map(r => ({
       id: r.id,
       sourceLocation: r.source_location,
@@ -442,7 +537,7 @@ export class QueryManager {
 
   getExternalReferencesByTarget(symbolName: string): { id: string; symbolName: string; serviceName?: string; detail?: string }[] {
     const stmt = this.db.prepare(Q.GET_EXTERNAL_REFS_BY_SYMBOL_NAME)
-    const rows = stmt.all(symbolName) as Record<string, any>[]
+    const rows = stmt.all(symbolName) as SqliteRow[]
     return rows.map(r => ({
       id: r.id,
       symbolName: r.symbol_name,
@@ -468,7 +563,7 @@ export class QueryManager {
 
   getExternalReferencesBySource(sourceName: string): { id: string; symbolName: string; serviceName?: string; detail?: string; sourceSymbol: string }[] {
     const stmt = this.db.prepare(Q.GET_EXTERNAL_REFS_BY_SOURCE_NAME)
-    const rows = stmt.all(`%${sourceName}%`) as Record<string, any>[]
+    const rows = stmt.all(`%${sourceName}%`) as SqliteRow[]
     return rows.map(r => ({
       id: r.id,
       symbolName: r.symbol_name,
@@ -502,5 +597,117 @@ export class QueryManager {
       JSON.stringify(data.directives),
       moduleId
     )
+  }
+
+  // === Flowable methods ===
+  insertFlowableProcess(id: string, processId: string, name: string, isExecutable: number, version: string, targetNamespace: string, filePath: string, moduleId: string): void {
+    this.db.prepare(Q.INSERT_FLOWABLE_PROCESS).run(id, processId, name, isExecutable, version, targetNamespace, filePath, moduleId)
+  }
+
+  insertFlowableNode(id: string, processId: string, name: string, type: string, implementation: string, async: number, documentation: string, moduleId: string): void {
+    this.db.prepare(Q.INSERT_FLOWABLE_NODE).run(id, processId, name, type, implementation, async, documentation, moduleId)
+  }
+
+  insertFlowableFlow(id: string, processId: string, fromNode: string, toNode: string, conditionExpression: string, conditionLanguage: string): void {
+    this.db.prepare(Q.INSERT_FLOWABLE_FLOW).run(id, processId, fromNode, toNode, conditionExpression, conditionLanguage)
+  }
+
+  getFlowableProcessesByModule(moduleId: string): Record<string, unknown>[] {
+    return this.db.prepare(Q.GET_FLOWABLE_PROCESSES_BY_MODULE).all(moduleId) as Record<string, unknown>[]
+  }
+
+  getAllFlowableProcesses(): Record<string, unknown>[] {
+    return this.db.prepare(Q.GET_ALL_FLOWABLE_PROCESSES).all() as Record<string, unknown>[]
+  }
+
+  getFlowableNodesByProcess(processId: string): Record<string, unknown>[] {
+    return this.db.prepare(Q.GET_FLOWABLE_NODES_BY_PROCESS).all(processId) as Record<string, unknown>[]
+  }
+
+  getFlowableFlowsByProcess(processId: string): Record<string, unknown>[] {
+    return this.db.prepare(Q.GET_FLOWABLE_FLOWS_BY_PROCESS).all(processId) as Record<string, unknown>[]
+  }
+
+  // === Drools methods ===
+  insertDroolsRule(id: string, packageName: string, ruleName: string, dialect: string, salience: number, activationGroup: string, agendaGroup: string, noLoop: number, lockOnActive: number, autoFocus: number, duration: number, whenCondition: string, thenAction: string, filePath: string, moduleId: string): void {
+    this.db.prepare(Q.INSERT_DROOLS_RULE).run(id, packageName, ruleName, dialect, String(salience), activationGroup, agendaGroup, noLoop, lockOnActive, autoFocus, String(duration), whenCondition, thenAction, filePath, moduleId)
+  }
+
+  insertDroolsType(id: string, packageName: string, typeName: string, fields: string, filePath: string): void {
+    this.db.prepare(Q.INSERT_DROOLS_TYPE).run(id, packageName, typeName, fields, filePath)
+  }
+
+  insertDroolsQuery(id: string, packageName: string, queryName: string, parameters: string, expression: string, filePath: string): void {
+    this.db.prepare(Q.INSERT_DROOLS_QUERY).run(id, packageName, queryName, parameters, expression, filePath)
+  }
+
+  insertDroolsFunction(id: string, packageName: string, functionName: string, returnType: string, parameters: string, body: string, filePath: string): void {
+    this.db.prepare(Q.INSERT_DROOLS_FUNCTION).run(id, packageName, functionName, returnType, parameters, body, filePath)
+  }
+
+  searchDroolsRules(searchTerm: string, moduleId?: string): Record<string, unknown>[] {
+    const like = `%${searchTerm}%`
+    if (moduleId) {
+      return this.db.prepare(Q.SEARCH_DROOLS_RULES_FTS).all(moduleId, like, like, like) as Record<string, unknown>[]
+    }
+    return this.db.prepare(Q.SEARCH_DROOLS_RULES).all(like, like, like) as Record<string, unknown>[]
+  }
+
+  getDroolsRulesByModule(moduleId: string): Record<string, unknown>[] {
+    return this.db.prepare(Q.GET_DROOLS_RULES_BY_MODULE).all(moduleId) as Record<string, unknown>[]
+  }
+
+  getAllDroolsRules(): Record<string, unknown>[] {
+    return this.db.prepare(Q.GET_ALL_DROOLS_RULES).all() as Record<string, unknown>[]
+  }
+
+  // === Maven methods ===
+  insertMavenProperty(id: string, pomId: string, key: string, value: string, resolvedValue: string, provenance: string): void {
+    this.db.prepare(Q.INSERT_MAVEN_PROPERTY).run(id, pomId, key, value, resolvedValue, provenance)
+  }
+
+  insertMavenDepMgmt(id: string, pomId: string, groupId: string, artifactId: string, version: string, scope: string): void {
+    this.db.prepare(Q.INSERT_MAVEN_DEP_MGMT).run(id, pomId, groupId, artifactId, version, scope)
+  }
+
+  // === Enterprise methods ===
+  insertEnterpriseAnnotation(id: string, frameworkName: string, annotationName: string, nodeId: string, kind: string, description: string, filePath: string, moduleId: string): void {
+    this.db.prepare(Q.INSERT_ENTERPRISE_ANNOTATION).run(id, frameworkName, annotationName, nodeId, kind, description, filePath, moduleId)
+  }
+
+  insertContainerImage(id: string, serviceName: string, imageName: string, registryUrl: string, baseImage: string, ports: string, jvmFlags: string, buildTool: string, filePath: string, moduleId: string): void {
+    this.db.prepare(Q.INSERT_CONTAINER_IMAGE).run(id, serviceName, imageName, registryUrl, baseImage, ports, jvmFlags, buildTool, filePath, moduleId)
+  }
+
+  insertCicdPipeline(id: string, pipelineType: string, triggerBranches: string, vmImage: string, stages: string, filePath: string, moduleId: string): void {
+    this.db.prepare(Q.INSERT_CICD_PIPELINE).run(id, pipelineType, triggerBranches, vmImage, stages, filePath, moduleId)
+  }
+
+  // === Entry points ===
+  insertEntryPoint(data: { id: string; kind: string; service: string; method: string; filePath: string; line: number; signature: string; httpMethod?: string; path?: string; queueName?: string; cronExpr?: string }): void {
+    this.db.prepare(Q.INSERT_ENTRY_POINT).run(data.id, data.kind, data.service, data.method, data.filePath, data.line, data.signature, data.httpMethod ?? '', data.path ?? '', data.queueName ?? '', data.cronExpr ?? '')
+  }
+
+  deleteEntryPointsByService(service: string): void {
+    this.db.prepare('DELETE FROM entry_points WHERE service = ?').run(service)
+  }
+
+  // === Service dependencies ===
+  insertServiceDependency(sourceService: string, targetService: string, dependencyType: string, optional: number, detectedFrom: string, moduleId: string): void {
+    this.db.prepare(Q.INSERT_SERVICE_DEPENDENCY).run(sourceService, targetService, dependencyType, optional, detectedFrom, moduleId)
+  }
+
+  deleteServiceDependenciesByService(service: string): void {
+    this.db.prepare('DELETE FROM service_dependencies WHERE source_service = ?').run(service)
+  }
+
+  getAllServiceDependencies(): { sourceService: string; targetService: string; dependencyType: string; optional: number }[] {
+    const rows = this.db.prepare('SELECT * FROM service_dependencies').all() as { source_service: string; target_service: string; dependency_type: string; optional: number }[]
+    return rows.map(r => ({
+      sourceService: r.source_service,
+      targetService: r.target_service,
+      dependencyType: r.dependency_type,
+      optional: r.optional,
+    }))
   }
 }

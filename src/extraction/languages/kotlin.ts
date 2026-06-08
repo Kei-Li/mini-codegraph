@@ -1,9 +1,9 @@
-import Parser from 'web-tree-sitter'
+import type Parser from 'web-tree-sitter'
 import type { NodeInfo, EdgeInfo } from './java.js'
 
 export type { NodeInfo, EdgeInfo }
 
-export function parseKotlinFile(source: string, filePath: string, parser: Parser, _config: any): { nodes: NodeInfo[]; edges: EdgeInfo[] } {
+export function parseKotlinFile(source: string, filePath: string, parser: Parser, _config: Record<string, unknown>): { nodes: NodeInfo[]; edges: EdgeInfo[] } {
   const tree = parser.parse(source)
   const rootNode = tree.rootNode
   const nodes: NodeInfo[] = []

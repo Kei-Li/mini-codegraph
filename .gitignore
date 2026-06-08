@@ -4,5 +4,13 @@ dist/
 *.db
 *.db-wal
 *.db-shm
+.git
 .DS_Store
 Thumbs.db
+.env
+.env.*
+*.pem
+*.key
+credentials*
+secret*
+docs/

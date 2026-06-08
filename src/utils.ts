@@ -7,8 +7,6 @@ import { createHash, randomBytes } from 'node:crypto'
 import { SUPPORTED_LANGUAGES } from './types.js'
 import type { LanguageConfig } from './types.js'
 
-const IS_WINDOWS = process.platform === 'win32'
-
 export class FileLock {
   private lockPath: string
   private held = false
@@ -26,7 +24,7 @@ export class FileLock {
         const stat = statSync(this.lockPath)
         const lockAge = Date.now() - stat.mtimeMs
 
-        if (lockAge < FileLock.STALE_TIMEOUT_MS && !isNaN(pid) && this.isProcessAlive(pid)) {
+        if (lockAge < FileLock.STALE_TIMEOUT_MS && !isNaN(pid) && pid !== process.pid && this.isProcessAlive(pid)) {
           throw new Error(
             `mini-codegraph database is locked by another process (PID ${pid}). ` +
             `If this is stale, delete ${this.lockPath}`
@@ -44,8 +42,8 @@ export class FileLock {
     try {
       writeFileSync(this.lockPath, lockId, { flag: 'wx' })
       this.held = true
-    } catch (err: any) {
-      if (err.code === 'EEXIST') {
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
         throw new Error(
           'mini-codegraph database is locked by another process. ' +
           `If this is stale, delete ${this.lockPath}`
@@ -149,8 +147,10 @@ export function languageForFile(filePath: string): LanguageConfig | undefined {
   return SUPPORTED_LANGUAGES.find(l => l.extensions.includes(ext))
 }
 
+const SUPPORTED_EXTENSIONS = new Set(SUPPORTED_LANGUAGES.flatMap(l => l.extensions))
+
 export function isSupportedFile(filePath: string): boolean {
-  return languageForFile(filePath) !== undefined
+  return SUPPORTED_EXTENSIONS.has(extname(filePath).toLowerCase())
 }
 
 // ── Shared ignore logic (watcher + indexer) ──
@@ -386,6 +386,22 @@ function getGitChangedFiles(rootDir: string): GitChanges | null {
   } catch {
     return null
   }
+}
+
+export function findAllGitRepos(workspaceRoot: string): string[] {
+  const repos: string[] = []
+  try {
+    const entries = readdirSync(workspaceRoot, { withFileTypes: true })
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue
+      if (entry.name.startsWith('.')) continue
+      const gitPath = join(workspaceRoot, entry.name, '.git')
+      if (existsSync(gitPath)) {
+        repos.push(join(workspaceRoot, entry.name))
+      }
+    }
+  } catch { /* silent */ }
+  return repos
 }
 
 // ── Legacy helpers (kept for backward compat in routes.ts etc.) ──

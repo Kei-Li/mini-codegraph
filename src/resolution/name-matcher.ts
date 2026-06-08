@@ -11,7 +11,7 @@ export function matchReference(
   queries: QueryManager,
   refName: string,
   sourceFile: string,
-  sourceModuleId: string,
+  _sourceModuleId: string,
   kind?: string
 ): MatchResult[] {
   const results: MatchResult[] = []

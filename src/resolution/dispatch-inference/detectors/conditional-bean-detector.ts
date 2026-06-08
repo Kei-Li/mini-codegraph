@@ -2,7 +2,7 @@ import type { QueryManager } from '../../../db/queries.js'
 import type { DispatchPattern, IDispatchDetector, InferredTarget } from '../types.js'
 import { CONFIDENCE } from '../types.js'
 import { readProjectConfig } from '../../config-reader.js'
-import { isNodeActiveUnderConfig, parseConditionalAnnotation, evaluateCondition } from '../../condition-matcher.js'
+import { isNodeActiveUnderConfig } from '../../condition-matcher.js'
 
 export class ConditionalBeanDetector implements IDispatchDetector {
   name = 'conditional-bean-detector'
@@ -134,7 +134,7 @@ export class ConditionalBeanDetector implements IDispatchDetector {
 
       if (targets.length > 0) {
         patterns.push({
-          type: targets[0].provenance as any,
+          type: targets[0].provenance,
           sourceId: iface.id,
           sourceName: iface.name,
           interfaceId: iface.id,
@@ -217,7 +217,7 @@ export class ConditionalBeanDetector implements IDispatchDetector {
 
       if (targets.length > 0) {
         patterns.push({
-          type: 'conditional_bean' as any,
+          type: 'conditional_bean' as const,
           sourceId: autowired.id,
           sourceName: autowired.name,
           interfaceId: ifaceNode.id,

@@ -1,6 +1,12 @@
+import { readFileSync, existsSync } from 'node:fs'
+import { join } from 'node:path'
 import type { QueryManager } from '../db/queries.js'
-import type { MiniCodeGraphNode, ModuleInfo } from '../types.js'
-import { isGeneratedFile, isSpringServiceImpl, findSpringImplName } from '../generated.js'
+import type { MiniCodeGraphNode, PageFanoutTrace, PageFanoutBranch, FanoutHop, BacktraceResult, BacktracePath, BacktraceHop } from '../types.js'
+import { isGeneratedFile, findSpringImplName } from '../generated.js'
+
+function srcName(filePath: string): string {
+  return filePath.split('/').pop() ?? filePath.split('\\').pop() ?? filePath
+}
 
 export interface PathHop {
   node: MiniCodeGraphNode
@@ -249,6 +255,288 @@ export class GraphTraverser {
     dfs(nodeId, depth)
     impacted.delete(nodeId)
     return impacted
+  }
+
+  isEntryPointNode(nodeId: string): { kind: string; method?: string; path?: string; queueName?: string } | undefined {
+    const node = this.queries.getNode(nodeId)
+    if (!node) return
+    if (node.kind === 'entry_point') return { kind: node.kind, path: node.name }
+    const anns = this.queries.getAnnotationsByNode(nodeId)
+    for (const a of anns) {
+      const ann = a.annotationName
+      if (['GetMapping', 'PostMapping', 'PutMapping', 'DeleteMapping', 'PatchMapping', 'RequestMapping'].includes(ann)) {
+        return { kind: 'rest_endpoint', method: ann.replace('Mapping', '').toUpperCase(), path: a.value }
+      }
+      if (ann === 'RabbitListener' || ann === 'KafkaListener' || ann === 'JmsListener') {
+        return { kind: 'mq_listener', queueName: a.value }
+      }
+      if (ann === 'Scheduled' || ann === 'SchedulingConfigurer') {
+        return { kind: 'scheduled_task', method: ann }
+      }
+      if (ann === 'VueRoute' || ann === 'Route') {
+        return { kind: 'page_entry', method: ann, path: a.value }
+      }
+    }
+    if (node.name === 'main' && (node.filePath?.endsWith('.java') || node.filePath?.endsWith('.kt'))) {
+      return { kind: 'main_method' }
+    }
+    return undefined
+  }
+
+  backtraceToEntry(nodeOrId: string | MiniCodeGraphNode, maxDepth = 15, maxPaths = 10): BacktraceResult {
+    const visited = new Set<string>()
+    const paths: BacktracePath[] = []
+    const node = typeof nodeOrId === 'string' ? this.queries.getNode(nodeOrId) : nodeOrId
+    if (!node) return { paths: [], foundEntry: false, rootNodeId: '', rootNodeName: '' }
+
+    const rootId = node.id
+    interface BfsEntry { currentId: string; hops: BacktraceHop[]; depth: number }
+    const queue: BfsEntry[] = [{ currentId: rootId, hops: [], depth: 0 }]
+
+    while (queue.length > 0 && paths.length < maxPaths) {
+      const { currentId, hops, depth } = queue.shift()!
+      if (depth > maxDepth) continue
+      const stateKey = `${currentId}:${hops.length}`
+      if (visited.has(stateKey)) continue
+      visited.add(stateKey)
+
+      const entryPoint = this.isEntryPointNode(currentId)
+      if (entryPoint) {
+        paths.push({ hops: [...hops], entryPointKind: entryPoint.kind, entryPointPath: entryPoint.path })
+        continue
+      }
+
+      // Expand callers (reverse direction)
+      for (const caller of this.queries.getCallers(currentId)) {
+        queue.push({
+          currentId: caller.id,
+          hops: [...hops, { id: caller.id, name: caller.name, kind: 'calls', filePath: caller.filePath ?? '', detail: `caller → ${caller.name}` }],
+          depth: depth + 1,
+        })
+      }
+
+      // Expand interface/implementation dispatch
+      const current = this.queries.getNode(currentId)
+      if (current) {
+        const impls = this.findImplementations(current)
+        for (const impl of impls) {
+          queue.push({
+            currentId: impl.id,
+            hops: [...hops, { id: impl.id, name: impl.name, kind: 'dispatch', filePath: impl.filePath ?? '', detail: `impl → ${impl.name}` }],
+            depth: depth + 1,
+          })
+        }
+      }
+
+      // Cross-service external references
+      if (current) {
+        const extRefs = this.queries.getExternalReferencesByTarget(current.name)
+        for (const ref of extRefs) {
+          const pseudoId = `ext:${ref.id}`
+          if (!visited.has(pseudoId)) {
+            queue.push({
+              currentId: pseudoId,
+              hops: [...hops, { id: pseudoId, name: `[${ref.serviceName ?? 'ext'}]`, kind: 'cross_service', filePath: `external://${ref.serviceName ?? 'unknown'}`, detail: ref.detail ?? '' }],
+              depth: depth + 1,
+            })
+          }
+        }
+      }
+
+      // Check callers that have dispatch annotation (feign/dispatch)
+      const callers = this.queries.getCallers(currentId)
+      for (const caller of callers) {
+        const callerAnns = this.queries.getAnnotationsByNode(caller.id)
+        for (const ca of callerAnns) {
+          if (ca.annotationName === 'FeignClient' || ca.annotationName === 'RabbitListener' || ca.annotationName === 'Scheduled') {
+            if (!visited.has(caller.id)) {
+              queue.push({
+                currentId: caller.id,
+                hops: [...hops, { id: caller.id, name: caller.name, kind: 'dispatch', filePath: caller.filePath ?? '', detail: `${ca.annotationName}: ${caller.name}` }],
+                depth: depth + 1,
+              })
+            }
+          }
+        }
+      }
+
+      // Containing module's API endpoints
+      if (current?.moduleId) {
+        const modEntries = this.queries.searchNodes(current.moduleId, 20)
+        for (const me of modEntries) {
+          if (me.kind === 'class' && me.id !== currentId) {
+            const meAnns = this.queries.getAnnotationsByNode(me.id)
+            for (const ma of meAnns) {
+              if (['RestController', 'Controller'].includes(ma.annotationName)) {
+                const children = this.queries.getChildren(me.id)
+                for (const c of children) {
+                  const ep = this.isEntryPointNode(c.id)
+                  if (ep && !visited.has(c.id)) {
+                    queue.push({
+                      currentId: c.id,
+                      hops: [...hops, { id: c.id, name: c.name, kind: 'dispatch', filePath: c.filePath ?? '', detail: `endpoint: ${ep.method ?? 'GET'} ${ep.path ?? ''}` }],
+                      depth: depth + 1,
+                    })
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    return {
+      paths,
+      foundEntry: paths.length > 0,
+      rootNodeId: rootId,
+      rootNodeName: node.name,
+    }
+  }
+
+  /**
+   * Fan-out trace: from a Vue page component, BFS component tree → aggregate all API calls → resolve each into full trace
+   */
+  fanoutTrace(pageFile: string, _maxDepth = 3, projectRoot?: string): PageFanoutTrace {
+    const allEdges = this.queries.getAllEdges()
+    const allNodes = this.queries.getAllNodes()
+
+    // Normalize path separators
+    const normalizedPageFile = pageFile.replace(/\\/g, '/')
+
+    // Step 1: BFS component tree to find all component files
+    const componentFiles = new Set<string>()
+    const visited = new Set<string>()
+    const queue: string[] = [normalizedPageFile]
+
+    while (queue.length > 0 && componentFiles.size < 200) {
+      const cf = queue.shift()!
+      const key = cf.toLowerCase()
+      if (visited.has(key)) continue
+      visited.add(key)
+      componentFiles.add(cf)
+
+      // Try to read this file and parse imported child components
+      let fileContent: string | undefined
+      try {
+        const fileRecord = allNodes.find(n => n.filePath && n.filePath.replace(/\\/g, '/') === cf)
+        if (fileRecord && existsSync(fileRecord.filePath!)) {
+          fileContent = readFileSync(fileRecord.filePath!, 'utf-8')
+        } else if (projectRoot) {
+          const candidate = join(projectRoot, cf)
+          if (existsSync(candidate)) {
+            fileContent = readFileSync(candidate, 'utf-8')
+          }
+        }
+      } catch { /* silent */ }
+
+      if (fileContent && visited.size < 200) {
+        // Match imports like `import Xxx from './Xxx.vue'` or `import Xxx from '@/components/Xxx.vue'`
+        const importRe = /from\s+['"](\.\/.+?\.vue)['"]/g
+        let m: RegExpExecArray | null
+        while ((m = importRe.exec(fileContent)) !== null) {
+          const relativePath = m[1]
+          const dir = cf.includes('/') ? cf.substring(0, cf.lastIndexOf('/')) : ''
+          const resolved = dir ? `${dir}/${relativePath.replace(/^\.\//, '')}` : relativePath.replace(/^\.\//, '')
+          const normalized = resolved.replace(/\\/g, '/')
+          if (!visited.has(normalized.toLowerCase())) {
+            queue.push(normalized)
+          }
+        }
+        // Match `@/` imports
+        const atImportRe = /from\s+['"]@\/(.+?\.vue)['"]/g
+        while ((m = atImportRe.exec(fileContent)) !== null) {
+          const resolved = m[1].replace(/\\/g, '/')
+          if (!visited.has(resolved.toLowerCase())) {
+            // Try full path resolution later
+            queue.push(resolved)
+          }
+        }
+      }
+    }
+
+    // Step 2: Collect all api_mapping edges from these component files
+    const componentApiEdges = new Map<string, typeof allEdges[0] & { meta: { path: string; method: string } }>()
+    for (const ae of allEdges) {
+      if (ae.kind === 'api_mapping') {
+        const srcNormalized = ae.sourceId.replace(/\\/g, '/')
+        // Direct match or partial path match
+        const isMatch = componentFiles.has(srcNormalized) ||
+          [...componentFiles].some(cf => srcNormalized.includes(cf) || cf.includes(srcNormalized))
+        if (isMatch) {
+          try {
+            const meta = JSON.parse(ae.metadata ?? '{}')
+            const key = `${meta.method ?? 'GET'}:${meta.path ?? ''}`
+            if (!componentApiEdges.has(key)) {
+              componentApiEdges.set(key, { ...ae, meta })
+            }
+          } catch { /* silent */ }
+        }
+      }
+    }
+
+    // Step 3: For each unique API, trace the full call chain
+    const branches: PageFanoutBranch[] = []
+    const involvedServicesSet = new Set<string>()
+
+    for (const [, ae] of componentApiEdges) {
+      const meta = ae.meta
+      const hops: FanoutHop[] = []
+
+      hops.push({ kind: 'vue_api_call', name: srcName(ae.sourceId), filePath: ae.sourceId, detail: `API → ${meta.path ?? ''}` })
+
+      const cn = this.queries.getNode(ae.targetId)
+      if (cn) {
+        hops.push({ kind: 'controller_endpoint', name: cn.name, moduleId: cn.moduleId, filePath: cn.filePath, detail: `${meta.method ?? 'GET'} ${meta.path ?? ''}` })
+        if (cn.moduleId) involvedServicesSet.add(cn.moduleId)
+
+        const svcEdges = allEdges.filter(e => e.sourceId === cn.id && (e.kind === 'calls' || e.kind === 'mybatis_mapping'))
+        for (const se of svcEdges) {
+          const sn = this.queries.getNode(se.targetId)
+          if (sn) {
+            const hopKind = se.kind === 'mybatis_mapping' ? 'mybatis_mapper' as const : 'service_method' as const
+            hops.push({ kind: hopKind, name: sn.name, moduleId: sn.moduleId, filePath: sn.filePath, detail: `${cn.name} → ${sn.name}` })
+            if (sn.moduleId) involvedServicesSet.add(sn.moduleId)
+
+            // Further trace service → sub-callees
+            const subCalls = allEdges.filter(e => e.sourceId === sn.id && e.kind === 'calls')
+            for (const sc of subCalls) {
+              const subN = this.queries.getNode(sc.targetId)
+              if (subN) {
+                hops.push({ kind: 'service_method', name: subN.name, moduleId: subN.moduleId, filePath: subN.filePath, detail: `${sn.name} → ${subN.name}` })
+                if (subN.moduleId) involvedServicesSet.add(subN.moduleId)
+              }
+            }
+          }
+        }
+
+        // Check for Feign calls from this controller
+        const feignEdges = this.queries.searchNodes('FeignClient', 20).filter(n => n.kind === 'interface')
+        for (const fe of feignEdges) {
+          const feignMethods = this.queries.getChildren(fe.id)
+          for (const fm of feignMethods) {
+            hops.push({ kind: 'feign_call', name: fm.name, moduleId: fe.moduleId, filePath: fe.filePath, detail: `${fe.name}.${fm.name}()` })
+            if (fe.moduleId) involvedServicesSet.add(fe.moduleId)
+          }
+        }
+      }
+
+      if (hops.length > 0) {
+        branches.push({
+          method: meta.method ?? 'GET',
+          path: meta.path ?? '',
+          sourceComponent: ae.sourceId.split('/').pop() ?? '',
+          trace: hops,
+        })
+      }
+    }
+
+    return {
+      routePath: normalizedPageFile,
+      pageFile: normalizedPageFile,
+      branches,
+      involvedServices: [...involvedServicesSet],
+    }
   }
 
   findRelated(nodeIds: string[]): Map<string, { node: MiniCodeGraphNode; relationships: string[] }> {

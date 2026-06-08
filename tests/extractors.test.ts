@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { extractJpaEntities, indexJpaEntities } from '../src/extraction/jpa-extractor.js'
-import { extractSecurityAnnotations, indexSecurity } from '../src/extraction/security-extractor.js'
-import { indexLombokAnnotations } from '../src/extraction/lombok-extractor.js'
-import { indexAopAnnotations } from '../src/extraction/aop-extractor.js'
-import { parseMyBatisXmlFile, findMyBatisMapperDir } from '../src/extraction/mybatis-extractor.js'
-import { indexCacheAnnotations, parseCacheAnnotationValue, extractRedisConfig } from '../src/extraction/cache-extractor.js'
-import { extractRedisHashes, extractRedisTemplate, extractRedisRepo, indexRedisAnnotations } from '../src/extraction/redis-extractor.js'
+import { extractJpaEntities, indexJpaEntities } from '../src/extraction/data/jpa-extractor.js'
+import { extractSecurityAnnotations, indexSecurity } from '../src/extraction/frameworks/security-extractor.js'
+import { indexLombokAnnotations } from '../src/extraction/data/lombok-extractor.js'
+import { indexAopAnnotations } from '../src/extraction/frameworks/aop-extractor.js'
+import { parseMyBatisXmlFile, findMyBatisMapperDir } from '../src/extraction/data/mybatis-extractor.js'
+import { indexCacheAnnotations, parseCacheAnnotationValue, extractRedisConfig } from '../src/extraction/frameworks/cache-extractor.js'
+import { extractRedisHashes, extractRedisTemplate, extractRedisRepo, indexRedisAnnotations } from '../src/extraction/data/redis-extractor.js'
 import { readFileSync } from 'node:fs'
 
 vi.mock('node:fs', () => ({
@@ -31,6 +31,15 @@ function createMockQueryManager(): any {
     }),
     getNode: vi.fn((id: string) => nodes.get(id)),
     getAllNodes: vi.fn(() => Array.from(nodes.values())),
+    getAllAnnotations: vi.fn(() => {
+      const map = new Map<string, { annotationName: string; value: string }[]>()
+      for (const a of annotations) {
+        let arr = map.get(a.nodeId)
+        if (!arr) { arr = []; map.set(a.nodeId, arr) }
+        arr.push({ annotationName: a.annotationName, value: a.value })
+      }
+      return map
+    }),
     getAnnotationsByNode: vi.fn((nodeId: string) => {
       return annotations.filter(a => a.nodeId === nodeId)
     }),

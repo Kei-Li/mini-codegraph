@@ -148,6 +148,8 @@ CREATE TABLE IF NOT EXISTS external_symbols (
   definition_file TEXT DEFAULT '',
   signature TEXT DEFAULT '',
   metadata JSON DEFAULT '{}',
+  version INTEGER DEFAULT 0,
+  changed_at TEXT DEFAULT '',
   created_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -166,6 +168,178 @@ CREATE INDEX IF NOT EXISTS idx_ext_ref_symbol ON external_references(external_sy
 CREATE INDEX IF NOT EXISTS idx_ext_ref_location ON external_references(source_location);
 CREATE INDEX IF NOT EXISTS idx_ext_ref_src_svc ON external_references(source_service);
 CREATE INDEX IF NOT EXISTS idx_ext_sym_service ON external_symbols(providing_service);
+
+CREATE TABLE IF NOT EXISTS entry_points (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  service TEXT NOT NULL,
+  method TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  line INTEGER DEFAULT 0,
+  signature TEXT DEFAULT '',
+  http_method TEXT DEFAULT '',
+  path TEXT DEFAULT '',
+  queue_name TEXT DEFAULT '',
+  cron_expr TEXT DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_entry_points_service ON entry_points(service);
+
+/* Enterprise Java additions (ADR-013) */
+CREATE TABLE IF NOT EXISTS service_dependencies (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_service TEXT NOT NULL,
+  target_service TEXT NOT NULL,
+  dependency_type TEXT DEFAULT 'compile',
+  optional INTEGER DEFAULT 0,
+  detected_from TEXT DEFAULT 'pom.xml',
+  module_id TEXT DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_svc_dep_source ON service_dependencies(source_service);
+CREATE INDEX IF NOT EXISTS idx_svc_dep_target ON service_dependencies(target_service);
+
+CREATE TABLE IF NOT EXISTS flowable_processes (
+  id TEXT PRIMARY KEY,
+  process_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  is_executable INTEGER DEFAULT 1,
+  version TEXT DEFAULT '',
+  target_namespace TEXT DEFAULT '',
+  file_path TEXT NOT NULL,
+  module_id TEXT DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS flowable_nodes (
+  id TEXT PRIMARY KEY,
+  process_id TEXT NOT NULL REFERENCES flowable_processes(id),
+  name TEXT NOT NULL,
+  type TEXT NOT NULL,
+  implementation TEXT DEFAULT '',
+  async INTEGER DEFAULT 0,
+  documentation TEXT DEFAULT '',
+  module_id TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_flowable_nodes_process ON flowable_nodes(process_id);
+
+CREATE TABLE IF NOT EXISTS flowable_flows (
+  id TEXT PRIMARY KEY,
+  process_id TEXT NOT NULL,
+  from_node TEXT NOT NULL,
+  to_node TEXT NOT NULL,
+  condition_expression TEXT DEFAULT '',
+  condition_language TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_flowable_flows_process ON flowable_flows(process_id);
+
+CREATE TABLE IF NOT EXISTS drools_rules (
+  id TEXT PRIMARY KEY,
+  package_name TEXT NOT NULL,
+  rule_name TEXT NOT NULL,
+  dialect TEXT DEFAULT 'java',
+  salience INTEGER DEFAULT 0,
+  activation_group TEXT DEFAULT '',
+  agenda_group TEXT DEFAULT '',
+  no_loop INTEGER DEFAULT 0,
+  lock_on_active INTEGER DEFAULT 0,
+  auto_focus INTEGER DEFAULT 0,
+  duration INTEGER DEFAULT 0,
+  when_condition TEXT NOT NULL,
+  then_action TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  module_id TEXT DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_drools_rules_module ON drools_rules(module_id);
+
+CREATE TABLE IF NOT EXISTS drools_types (
+  id TEXT PRIMARY KEY,
+  package_name TEXT NOT NULL,
+  type_name TEXT NOT NULL,
+  fields TEXT DEFAULT '[]',
+  file_path TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS drools_queries (
+  id TEXT PRIMARY KEY,
+  package_name TEXT NOT NULL,
+  query_name TEXT NOT NULL,
+  parameters TEXT DEFAULT '[]',
+  expression TEXT DEFAULT '',
+  file_path TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS drools_functions (
+  id TEXT PRIMARY KEY,
+  package_name TEXT NOT NULL,
+  function_name TEXT NOT NULL,
+  return_type TEXT DEFAULT 'void',
+  parameters TEXT DEFAULT '[]',
+  body TEXT DEFAULT '',
+  file_path TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS maven_properties (
+  id TEXT PRIMARY KEY,
+  pom_id TEXT NOT NULL,
+  key TEXT NOT NULL,
+  value TEXT NOT NULL,
+  resolved_value TEXT DEFAULT '',
+  provenance TEXT DEFAULT 'direct'
+);
+CREATE INDEX IF NOT EXISTS idx_maven_props_pom ON maven_properties(pom_id);
+
+CREATE TABLE IF NOT EXISTS maven_dependency_management (
+  id TEXT PRIMARY KEY,
+  pom_id TEXT NOT NULL,
+  group_id TEXT NOT NULL,
+  artifact_id TEXT NOT NULL,
+  version TEXT NOT NULL,
+  scope TEXT DEFAULT 'compile'
+);
+CREATE INDEX IF NOT EXISTS idx_maven_dep_mgmt_pom ON maven_dependency_management(pom_id);
+
+CREATE TABLE IF NOT EXISTS enterprise_annotations (
+  id TEXT PRIMARY KEY,
+  framework_name TEXT NOT NULL,
+  annotation_name TEXT NOT NULL,
+  node_id TEXT NOT NULL REFERENCES nodes(id),
+  kind TEXT NOT NULL,
+  description TEXT DEFAULT '',
+  file_path TEXT NOT NULL,
+  module_id TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_ent_ann_framework ON enterprise_annotations(framework_name);
+CREATE INDEX IF NOT EXISTS idx_ent_ann_module ON enterprise_annotations(module_id);
+
+CREATE TABLE IF NOT EXISTS container_images (
+  id TEXT PRIMARY KEY,
+  service_name TEXT NOT NULL,
+  image_name TEXT NOT NULL,
+  registry_url TEXT DEFAULT '',
+  base_image TEXT DEFAULT '',
+  ports TEXT DEFAULT '[]',
+  jvm_flags TEXT DEFAULT '',
+  build_tool TEXT DEFAULT 'jib',
+  file_path TEXT NOT NULL,
+  module_id TEXT DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_container_images_service ON container_images(service_name);
+
+CREATE TABLE IF NOT EXISTS cicd_pipelines (
+  id TEXT PRIMARY KEY,
+  pipeline_type TEXT NOT NULL,
+  trigger_branches TEXT DEFAULT '[]',
+  vm_image TEXT DEFAULT '',
+  stages TEXT DEFAULT '[]',
+  file_path TEXT NOT NULL,
+  module_id TEXT DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_cicd_pipelines_module ON cicd_pipelines(module_id);
 `
 
 export const DELETE_FILE_NODES = `DELETE FROM nodes WHERE file_path = ?`
@@ -256,7 +430,8 @@ export const RESOLVE_CALL_EDGES = `
   )
   WHERE kind = 'calls'
     AND target NOT LIKE ':%'
-    AND target NOT LIKE '%:%'
+    AND target LIKE '%:%'
+    AND target NOT LIKE '%:%:%'
     AND EXISTS (SELECT 1 FROM nodes WHERE id LIKE '%' || edges.target || ':%')
 `
 
@@ -291,7 +466,7 @@ export const INSERT_TEMPLATE = `
 export const GET_TEMPLATES_BY_MODULE = `SELECT * FROM templates WHERE module_id = ?`
 
 /* External cross-service tables */
-export const INSERT_EXTERNAL_SYMBOL = "INSERT OR REPLACE INTO external_symbols (id, name, kind, providing_service, definition_file, signature, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)"
+export const INSERT_EXTERNAL_SYMBOL = "INSERT OR REPLACE INTO external_symbols (id, name, kind, providing_service, definition_file, signature, metadata, version, changed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
 export const INSERT_EXTERNAL_REFERENCE = "INSERT INTO external_references (source_location, external_symbol_id, reference_type, target_service, source_service, metadata) VALUES (?, ?, ?, ?, ?, ?)"
 export const GET_EXTERNAL_SYMBOLS_BY_SERVICE = "SELECT * FROM external_symbols WHERE providing_service = ?"
 export const GET_EXTERNAL_SYMBOL_BY_ID = "SELECT * FROM external_symbols WHERE id = ?"
@@ -301,7 +476,95 @@ export const GET_EXTERNAL_REFS_BY_SOURCE_NAME = "SELECT r.*, s.name as symbol_na
 export const GET_ALL_EXTERNAL_SYMBOLS = "SELECT * FROM external_symbols"
 export const GET_ALL_EXTERNAL_REFERENCES = "SELECT * FROM external_references"
 export const DELETE_EXTERNAL_SYMBOLS_BY_SERVICE = "DELETE FROM external_symbols WHERE providing_service = ?"
-export const UPDATE_EXTERNAL_SYMBOL = "UPDATE external_symbols SET name=?, kind=?, providing_service=?, signature=? WHERE id=?"
+export const UPDATE_EXTERNAL_SYMBOL = "UPDATE external_symbols SET name=?, kind=?, providing_service=?, signature=?, version=?, changed_at=? WHERE id=?"
 export const DELETE_EXTERNAL_SYMBOL_BY_ID = "DELETE FROM external_symbols WHERE id=?"
 export const DELETE_EXTERNAL_REFERENCE_BY_ID = "DELETE FROM external_references WHERE id=?"
 export const DELETE_EXTERNAL_REFS_BY_SERVICE = "DELETE FROM external_references WHERE target_service = ? OR external_symbol_id IN (SELECT id FROM external_symbols WHERE providing_service = ?)"
+
+/** P1: Drop FTS triggers before bulk insert to avoid per-row trigger overhead */
+export const DROP_FTS_TRIGGERS = `
+  DROP TRIGGER IF EXISTS nodes_ai;
+  DROP TRIGGER IF EXISTS nodes_ad;
+  DROP TRIGGER IF EXISTS nodes_au;
+`
+
+/** P1: Recreate FTS triggers after bulk insert */
+export const CREATE_FTS_TRIGGERS = `
+  CREATE TRIGGER IF NOT EXISTS nodes_ai AFTER INSERT ON nodes BEGIN
+    INSERT INTO nodes_fts(rowid, name, qualified_name, docstring, signature)
+    VALUES (new.rowid, new.name, new.qualified_name, new.docstring, new.signature);
+  END;
+  CREATE TRIGGER IF NOT EXISTS nodes_ad AFTER DELETE ON nodes BEGIN
+    INSERT INTO nodes_fts(nodes_fts, rowid, name, qualified_name, docstring, signature)
+    VALUES ('delete', old.rowid, old.name, old.qualified_name, old.docstring, old.signature);
+  END;
+  CREATE TRIGGER IF NOT EXISTS nodes_au AFTER UPDATE ON nodes BEGIN
+    INSERT INTO nodes_fts(nodes_fts, rowid, name, qualified_name, docstring, signature)
+    VALUES ('delete', old.rowid, old.name, old.qualified_name, old.docstring, old.signature);
+    INSERT INTO nodes_fts(rowid, name, qualified_name, docstring, signature)
+    VALUES (new.rowid, new.name, new.qualified_name, new.docstring, new.signature);
+  END;
+`
+
+/** P1: Rebuild FTS index after bulk insert */
+export const REBUILD_FTS = `INSERT INTO nodes_fts(nodes_fts) VALUES('rebuild')`
+
+/* Entry points */
+export const INSERT_ENTRY_POINT = `INSERT OR REPLACE INTO entry_points (id, kind, service, method, file_path, line, signature, http_method, path, queue_name, cron_expr) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+export const DELETE_ENTRY_POINTS_BY_SERVICE = `DELETE FROM entry_points WHERE service = ?`
+
+/* ============ Enterprise Java additions (ADR-013) ============ */
+
+/* Service build dependencies (from pom.xml / build.gradle) */
+export const INSERT_SERVICE_DEPENDENCY = `INSERT OR IGNORE INTO service_dependencies (source_service, target_service, dependency_type, optional, detected_from, module_id) VALUES (?, ?, ?, ?, ?, ?)`
+export const GET_SERVICE_DEPENDENCIES_BY_SERVICE = `SELECT * FROM service_dependencies WHERE source_service = ?`
+export const GET_SERVICE_DEPENDENCIES_BY_TARGET = `SELECT * FROM service_dependencies WHERE target_service = ?`
+export const DELETE_SERVICE_DEPENDENCIES_BY_SERVICE = `DELETE FROM service_dependencies WHERE source_service = ?`
+
+/* Flowable BPMN process tables */
+export const INSERT_FLOWABLE_PROCESS = `INSERT OR REPLACE INTO flowable_processes (id, process_id, name, is_executable, version, target_namespace, file_path, module_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+export const GET_FLOWABLE_PROCESSES_BY_MODULE = `SELECT * FROM flowable_processes WHERE module_id = ?`
+export const GET_ALL_FLOWABLE_PROCESSES = `SELECT * FROM flowable_processes`
+export const GET_FLOWABLE_PROCESS_BY_ID = `SELECT * FROM flowable_processes WHERE id = ?`
+
+export const INSERT_FLOWABLE_NODE = `INSERT OR REPLACE INTO flowable_nodes (id, process_id, name, type, implementation, async, documentation, module_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+export const GET_FLOWABLE_NODES_BY_PROCESS = `SELECT * FROM flowable_nodes WHERE process_id = ? ORDER BY rowid`
+
+export const INSERT_FLOWABLE_FLOW = `INSERT OR REPLACE INTO flowable_flows (id, process_id, from_node, to_node, condition_expression, condition_language) VALUES (?, ?, ?, ?, ?, ?)`
+export const GET_FLOWABLE_FLOWS_BY_PROCESS = `SELECT * FROM flowable_flows WHERE process_id = ? ORDER BY rowid`
+
+/* Drools/KIE rule tables */
+export const INSERT_DROOLS_RULE = `INSERT OR REPLACE INTO drools_rules (id, package_name, rule_name, dialect, salience, activation_group, agenda_group, no_loop, lock_on_active, auto_focus, duration, when_condition, then_action, file_path, module_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+export const SEARCH_DROOLS_RULES = `SELECT * FROM drools_rules WHERE when_condition LIKE ? OR rule_name LIKE ? OR then_action LIKE ?`
+export const SEARCH_DROOLS_RULES_FTS = `SELECT * FROM drools_rules WHERE module_id = ? AND (when_condition LIKE ? OR rule_name LIKE ? OR then_action LIKE ?)`
+export const GET_DROOLS_RULES_BY_MODULE = `SELECT * FROM drools_rules WHERE module_id = ?`
+export const GET_ALL_DROOLS_RULES = `SELECT * FROM drools_rules`
+export const GET_DROOLS_RULE_BY_ID = `SELECT * FROM drools_rules WHERE id = ?`
+
+export const INSERT_DROOLS_TYPE = `INSERT OR REPLACE INTO drools_types (id, package_name, type_name, fields, file_path) VALUES (?, ?, ?, ?, ?)`
+export const GET_DROOLS_TYPES_BY_MODULE = `SELECT * FROM drools_types WHERE id LIKE ?`
+
+export const INSERT_DROOLS_QUERY = `INSERT OR REPLACE INTO drools_queries (id, package_name, query_name, parameters, expression, file_path) VALUES (?, ?, ?, ?, ?, ?)`
+
+export const INSERT_DROOLS_FUNCTION = `INSERT OR REPLACE INTO drools_functions (id, package_name, function_name, return_type, parameters, body, file_path) VALUES (?, ?, ?, ?, ?, ?, ?)`
+
+/* Maven property inheritance chain */
+export const INSERT_MAVEN_PROPERTY = `INSERT OR REPLACE INTO maven_properties (id, pom_id, key, value, resolved_value, provenance) VALUES (?, ?, ?, ?, ?, ?)`
+export const GET_MAVEN_PROPERTIES_BY_POM = `SELECT * FROM maven_properties WHERE pom_id = ?`
+
+export const INSERT_MAVEN_DEP_MGMT = `INSERT OR IGNORE INTO maven_dependency_management (id, pom_id, group_id, artifact_id, version, scope) VALUES (?, ?, ?, ?, ?, ?)`
+export const GET_MAVEN_DEP_MGMT_BY_POM = `SELECT * FROM maven_dependency_management WHERE pom_id = ?`
+
+/* Enterprise framework annotations */
+export const INSERT_ENTERPRISE_ANNOTATION = `INSERT OR REPLACE INTO enterprise_annotations (id, framework_name, annotation_name, node_id, kind, description, file_path, module_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+export const GET_ENTERPRISE_ANNOTATIONS_BY_FRAMEWORK = `SELECT * FROM enterprise_annotations WHERE framework_name = ?`
+export const GET_ENTERPRISE_ANNOTATIONS_BY_MODULE = `SELECT * FROM enterprise_annotations WHERE module_id = ?`
+
+/* Container images (Jib / Dockerfile) */
+export const INSERT_CONTAINER_IMAGE = `INSERT OR REPLACE INTO container_images (id, service_name, image_name, registry_url, base_image, ports, jvm_flags, build_tool, file_path, module_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+export const GET_CONTAINER_IMAGES_BY_SERVICE = `SELECT * FROM container_images WHERE service_name = ?`
+export const GET_ALL_CONTAINER_IMAGES = `SELECT * FROM container_images`
+
+/* CI/CD pipelines */
+export const INSERT_CICD_PIPELINE = `INSERT OR REPLACE INTO cicd_pipelines (id, pipeline_type, trigger_branches, vm_image, stages, file_path, module_id) VALUES (?, ?, ?, ?, ?, ?, ?)`
+export const GET_CICD_PIPELINES_BY_MODULE = `SELECT * FROM cicd_pipelines WHERE module_id = ?`

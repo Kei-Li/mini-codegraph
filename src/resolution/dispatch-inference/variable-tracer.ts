@@ -42,7 +42,7 @@ function isGetterMethod(name: string): boolean {
          (name.startsWith('is') && name.length > 2)
 }
 
-function inferEntityFromMethod(methodName: string, parentClassName: string): string | undefined {
+function inferEntityFromMethod(_methodName: string, parentClassName: string): string | undefined {
   // e.g., orderRepository.findById → entity = Order
   // e.g., configRepository.findByKey → entity = Config
   if (parentClassName) {
@@ -80,9 +80,9 @@ const ANNOTATION_CONFIG_SOURCES = ['Value']
 function detectDataSource(
   methodName: string,
   parentClassName: string,
-  calleeEdges: { kind: string; targetId: string }[],
-  allEdges: { kind: string; sourceId: string; targetId: string }[],
-  queries: QueryManager,
+  _calleeEdges: { kind: string; targetId: string }[],
+  _allEdges: { kind: string; sourceId: string; targetId: string }[],
+  _queries: QueryManager,
 ): DataSource | undefined {
   // HTTP request parameters: request.getParameter("type")
   if (HTTP_PARAM_METHODS.includes(methodName)) {
@@ -188,9 +188,6 @@ export function traceVariable(
   const methodNode = queries.getNode(methodId)
   if (!methodNode) return null
 
-  const methodParent = methodNode.parentId ? queries.getNode(methodNode.parentId) : null
-  const parentClassName = methodParent?.name ?? ''
-
   const allNodes = queries.getAllNodes()
   const allEdges = queries.getAllEdges()
   const children = allNodes.filter(n => n.parentId === methodId)
@@ -202,7 +199,7 @@ export function traceVariable(
   // 1. Direct assignments (variable declaration with literal)
   const varDeclarations = children.filter(n =>
     (n.kind === 'variable' || n.kind === 'assignment') &&
-    (n.name === varName || (n as any).declaredName === varName)
+    (n.name === varName || ('declaredName' in n && (n as MiniCodeGraphNode & { declaredName?: string }).declaredName === varName))
   )
 
   for (const decl of varDeclarations) {
@@ -272,7 +269,7 @@ export function traceVariable(
 
   // 3. Variable passed as parameter — trace from caller perspective
   const paramNodes = children.filter(n =>
-    n.kind === 'parameter' && (n.name === varName || (n as any).declaredName === varName)
+    n.kind === 'parameter' && (n.name === varName || ('declaredName' in n && (n as MiniCodeGraphNode & { declaredName?: string }).declaredName === varName))
   )
   if (paramNodes.length > 0 && !dataSource) {
     for (const pn of paramNodes) {

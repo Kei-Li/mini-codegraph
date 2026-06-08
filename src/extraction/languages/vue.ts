@@ -14,8 +14,6 @@ export interface VueTemplateBlock {
 }
 
 export function extractScriptBlock(source: string): VueScriptBlock | null {
-  const lines = source.split('\n')
-
   const scriptMatch = source.match(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/)
   if (!scriptMatch) return null
 

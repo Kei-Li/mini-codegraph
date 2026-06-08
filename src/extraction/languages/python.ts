@@ -1,4 +1,4 @@
-import Parser from 'web-tree-sitter'
+import type Parser from 'web-tree-sitter'
 
 export interface NodeInfo {
   kind: string
@@ -55,15 +55,15 @@ export function parsePythonFile(
     }
 
     if (nodeType === 'function_definition' || nodeType === 'async_function_definition') {
-      const nameNode = node.namedChildren.find((c: any) => c.type === 'identifier' || c.type === 'name')
+      const nameNode = node.namedChildren.find((c: Parser.SyntaxNode) => c.type === 'identifier' || c.type === 'name')
       const name = nameNode?.text ?? 'anonymous'
       const parentId = scopeStack.length > 0 ? scopeStack[scopeStack.length - 1] : null
       const nodeId = `${filePath}:${name}:${range.startLine}`
 
       const docstring = extractPythonDocstring(lines, range.startLine)
       const params = node.namedChildren
-        .filter((c: any) => c.type === 'parameters')
-        .flatMap((c: any) => c.namedChildren.map((p: any) => p.text))
+        .filter((c: Parser.SyntaxNode) => c.type === 'parameters')
+        .flatMap((c: Parser.SyntaxNode) => c.namedChildren.map((p: Parser.SyntaxNode) => p.text))
         .join(', ')
       const signature = `def ${name}(${params})`
 
@@ -101,15 +101,15 @@ export function parsePythonFile(
     }
 
     if (nodeType === 'class_definition') {
-      const nameNode = node.namedChildren.find((c: any) => c.type === 'identifier' || c.type === 'name')
+      const nameNode = node.namedChildren.find((c: Parser.SyntaxNode) => c.type === 'identifier' || c.type === 'name')
       const name = nameNode?.text ?? 'Unknown'
       const parentId = scopeStack.length > 0 ? scopeStack[scopeStack.length - 1] : null
       const nodeId = `${filePath}:${name}:${range.startLine}`
 
       const docstring = extractPythonDocstring(lines, range.startLine)
       const bases = node.namedChildren
-        .filter((c: any) => c.type === 'argument_list' || c.type === 'superclass')
-        .flatMap((c: any) => c.namedChildren.map((p: any) => p.text))
+        .filter((c: Parser.SyntaxNode) => c.type === 'argument_list' || c.type === 'superclass')
+        .flatMap((c: Parser.SyntaxNode) => c.namedChildren.map((p: Parser.SyntaxNode) => p.text))
         .join(', ')
       const signature = `class ${name}(${bases})`
 
@@ -145,12 +145,12 @@ export function parsePythonFile(
     }
 
     if (nodeType === 'call') {
-      const nameNode = node.namedChildren.find((c: any) =>
+      const nameNode = node.namedChildren.find((c: Parser.SyntaxNode) =>
         c.type === 'identifier' || c.type === 'attribute' || c.type === 'string'
       )
       if (!nameNode) { visitChildren(); return }
       const callName = nameNode.type === 'attribute'
-        ? nameNode.namedChildren.map((c: any) => c.text).join('.')
+        ? nameNode.namedChildren.map((c: Parser.SyntaxNode) => c.text).join('.')
         : nameNode.text
 
       const callerId = findEnclosingScope(node, filePath)
@@ -170,15 +170,15 @@ export function parsePythonFile(
 
     if (nodeType === 'import_statement' || nodeType === 'import_from_statement') {
       const modules = node.namedChildren
-        .filter((c: any) => c.type === 'dotted_name' || c.type === 'aliased_import' || c.type === 'wildcard_import')
-        .map((c: any) => {
+        .filter((c: Parser.SyntaxNode) => c.type === 'dotted_name' || c.type === 'aliased_import' || c.type === 'wildcard_import')
+        .map((c: Parser.SyntaxNode) => {
           if (c.type === 'dotted_name') return c.text
-          if (c.type === 'aliased_import') return c.namedChildren.map((x: any) => x.text).join(' as ')
+          if (c.type === 'aliased_import') return c.namedChildren.map((x: Parser.SyntaxNode) => x.text).join(' as ')
           return c.text
         })
 
       if (nodeType === 'import_from_statement') {
-        const fromNode = node.namedChildren.find((c: any) => c.type === 'dotted_name')
+        const fromNode = node.namedChildren.find((c: Parser.SyntaxNode) => c.type === 'dotted_name')
         const fromName = fromNode?.text ?? ''
         for (const m of modules) {
           const importName = `${fromName}.${m}`
@@ -234,7 +234,7 @@ export function parsePythonFile(
     }
 
     if (nodeType === 'assignment') {
-      const leftNode = node.namedChildren.find((c: any) =>
+      const leftNode = node.namedChildren.find((c: Parser.SyntaxNode) =>
         c.type === 'identifier' || c.type === 'attribute' || c.type === 'pattern_list'
       )
       if (!leftNode || leftNode.type !== 'identifier') { visitChildren(); return }
@@ -268,14 +268,14 @@ export function parsePythonFile(
     }
 
     if (nodeType === 'decorated_definition') {
-      const defNode = node.namedChildren.find((c: any) =>
+      const defNode = node.namedChildren.find((c: Parser.SyntaxNode) =>
         c.type === 'function_definition' || c.type === 'class_definition' || c.type === 'async_function_definition'
       )
       if (defNode) {
-        const nameNode = defNode.namedChildren.find((c: any) => c.type === 'identifier')
+        const nameNode = defNode.namedChildren.find((c: Parser.SyntaxNode) => c.type === 'identifier')
         const decorators = node.namedChildren
-          .filter((c: any) => c.type === 'decorator')
-          .map((d: any) => d.text)
+          .filter((c: Parser.SyntaxNode) => c.type === 'decorator')
+          .map((d: Parser.SyntaxNode) => d.text)
         if (nameNode && decorators.length > 0) {
           const name = nameNode.text
           if (name === 'route' || name === 'app' || decorators.some(d => d.includes('route') || d.includes('app.'))) {
@@ -329,12 +329,12 @@ export function parsePythonFile(
   return { nodes, edges }
 }
 
-function findEnclosingScope(node: any, filePath: string): string | null {
+function findEnclosingScope(node: Parser.SyntaxNode, filePath: string): string | null {
   let p = node.parent
   while (p) {
     if (p.type === 'function_definition' || p.type === 'async_function_definition' ||
         p.type === 'class_definition') {
-      const nameNode = p.namedChildren.find((c: any) =>
+      const nameNode = p.namedChildren.find((c: Parser.SyntaxNode) =>
         c.type === 'identifier' || c.type === 'name'
       )
       const name = nameNode?.text ?? 'anonymous'

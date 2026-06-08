@@ -2,10 +2,7 @@ import { readFileSync, existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { IExtractor, ExtractionOutput } from './frameworks.js'
 import type { QueryManager } from '../../db/queries.js'
-
-function safeJsonParse(text: string): any {
-  try { return JSON.parse(text) } catch { return {} }
-}
+import { safeJsonParse } from '../../utils.js'
 
 const HTTP_VERBS = ['GetMapping', 'PostMapping', 'PutMapping', 'DeleteMapping', 'PatchMapping']
 
@@ -56,8 +53,6 @@ export class SpringCloudExtractor implements IExtractor {
             const methodAnns = queries.getAnnotationsByNode(child.id)
             for (const ma of methodAnns) {
               if ([...HTTP_VERBS, 'RequestMapping'].includes(ma.annotationName)) {
-                const httpMethod = ma.annotationName === 'RequestMapping' ? 'ANY'
-                  : ma.annotationName.replace('Mapping', '').toUpperCase()
                 const path = ma.value.replace(/["']/g, '')
                 consumes.push({
                   symbolId: `feign.${targetService}.${child.name}${path}`,
@@ -128,8 +123,6 @@ export class SpringCloudExtractor implements IExtractor {
 
     const files = this.collectJavaFiles(srcDir)
     const serviceUrlPattern = /(?:restTemplate|restOps|this\.restTemplate)\s*\.\s*(?:getForObject|getForEntity|postForObject|postForEntity|put|delete|exchange|execute)\(\s*["'](https?:\/\/([\w-]+)\/[^"']*)["']/gi
-    const directUrlPattern = /["'](https?:\/\/([\w-]+)\/[^"']*)["']/g
-
     for (const f of files) {
       try {
         const content = readFileSync(f, 'utf-8')

@@ -1,6 +1,7 @@
 import type { Transport } from './types.js'
 import type { GraphQueryManager } from '../graph/queries.js'
 import { createTools, type ToolDefinition } from './tools.js'
+import { logError } from '../logger.js'
 
 const MAX_OUTPUT_LENGTH = 15_000
 const CACHE_SIZE = 500
@@ -24,17 +25,16 @@ export interface JSONRPCRequest {
 export interface JSONRPCResponse {
   jsonrpc: '2.0'
   id: number | string | null
-  result?: any
-  error?: { code: number; message: string; data?: any }
+  result?: unknown
+  error?: { code: number; message: string; data?: unknown }
 }
 
 export class MCPServer {
   private transport: Transport
   private graph: GraphQueryManager
   private tools: ToolDefinition[] = []
-  private initialized = false
   private getPendingFiles: () => { path: string; firstSeenMs: number; lastSeenMs: number; indexing: boolean }[]
-  private cache = new Map<string, { result: any; ts: number }>()
+  private cache = new Map<string, { result: string; ts: number }>()
   private cacheKeys: string[] = []
 
   constructor(
@@ -45,10 +45,10 @@ export class MCPServer {
     this.transport = transport
     this.graph = graph
     this.getPendingFiles = getPendingFiles ?? (() => [])
-    this.tools = createTools(graph, getPendingFiles)
+    this.tools = createTools()
   }
 
-  private cacheGet(key: string): any | undefined {
+  private cacheGet(key: string): string | undefined {
     const entry = this.cache.get(key)
     if (entry && Date.now() - entry.ts < 60_000) return entry.result
     this.cache.delete(key)
@@ -57,7 +57,7 @@ export class MCPServer {
     return undefined
   }
 
-  private cacheSet(key: string, result: any): void {
+  private cacheSet(key: string, result: string): void {
     if (this.cacheKeys.length >= CACHE_SIZE) {
       const oldest = this.cacheKeys.shift()
       if (oldest) this.cache.delete(oldest)
@@ -79,7 +79,6 @@ export class MCPServer {
     try {
       switch (method) {
         case 'initialize':
-          this.initialized = true
           this.graph.checkStaleFiles()
           this.sendResponse(id, {
             protocolVersion: '2024-11-05',
@@ -98,27 +97,7 @@ export class MCPServer {
             instructions: [
               'mini-codegraph provides code intelligence through a knowledge graph built from AST parsing.',
               '',
-              'Tool selection by intent:',
-              '- mini_cg_context: map an area, understand a task, build comprehensive context',
-              '- mini_cg_trace: "how does X reach Y?" — finds call paths between two symbols',
-              '- mini_cg_explore: survey related symbols grouped by file, plus a relationship map',
-              '- mini_cg_search: find symbols by name across the codebase',
-              '- mini_cg_callers / mini_cg_callees: walk call flow one direction at a time (includes cross-service via Feign/RestTemplate/WebClient)',
-              '- mini_cg_impact: check blast radius before editing (includes external callers)',
-              '- mini_cg_node: get details about a single symbol',
-              '- mini_cg_files: list indexed file structure',
-              '- mini_cg_status: check index health and statistics',
-              '- mini_cg_workspace_status: view all workspace projects',
-              '- mini_cg_architecture: show microservice architecture overview',
-              '- mini_cg_feign: list FeignClient interfaces and targets',
-              '- mini_cg_mybatis: list MyBatis mapper XML bindings',
-              '- mini_cg_modules: list indexed modules (microservices)',
-              '- mini_cg_react: list React components, hooks, stores, queries',
-              '- mini_cg_mongo: list MongoDB entities and repositories',
-              '- mini_cg_redis: list Redis hashes and templates',
-              '- mini_cg_sql: list SQL tables and statements',
-              '- mini_cg_dispatch: analyze dispatch patterns (proxy/AOP/strategy/reflection)',
-              '- mini_cg_config: evaluate active @Profile/@ConditionalOnProperty implementations',
+              'You have access to 23+ structured query tools prefixed with mini_cg_. Use tools/list to discover available tools.',
               '',
               'Usage rules:',
               '- Answer structural questions with these tools — do NOT fall back to grep/read.',
@@ -171,8 +150,8 @@ export class MCPServer {
             this.sendResponse(id, {
               content: [{ type: 'text', text: truncateOutput(textContent) }],
             })
-          } catch (e: any) {
-            console.error('Tool execution error:', e)
+          } catch (e) {
+            logError('Tool execution error', e)
             this.sendError(id, -32603, 'Internal server error')
           }
           break
@@ -192,13 +171,13 @@ export class MCPServer {
         default:
           this.sendError(id, -32601, `Method not found: ${method}`)
       }
-    } catch (e: any) {
-      console.error('Internal error:', e)
+    } catch (e) {
+      logError('Internal error', e)
       this.sendError(id, -32603, 'Internal server error')
     }
   }
 
-  private sendResponse(id: number | string | null, result: any): void {
+  private sendResponse(id: number | string | null, result: unknown): void {
     this.transport.send({
       jsonrpc: '2.0',
       id,
@@ -206,7 +185,7 @@ export class MCPServer {
     })
   }
 
-  private sendError(id: number | string | null, code: number, message: string, data?: any): void {
+  private sendError(id: number | string | null, code: number, message: string, data?: unknown): void {
     this.transport.send({
       jsonrpc: '2.0',
       id,

@@ -21,7 +21,6 @@ export class DaemonServer {
   private server: ReturnType<typeof createServer> | null = null
   private port = 0
   private dataDir: string
-  private projectRoot: string
   private clients: Map<Socket, { socket: Socket; ppid?: number }> = new Map()
   private idleTimer: ReturnType<typeof setTimeout> | null = null
   private ppidWatchdogTimer: ReturnType<typeof setInterval> | null = null
@@ -34,7 +33,6 @@ export class DaemonServer {
   private getPendingFiles: () => PendingFile[]
 
   constructor(projectRoot: string, graph: GraphQueryManager, getPendingFiles?: () => PendingFile[]) {
-    this.projectRoot = projectRoot
     this.dataDir = join(projectRoot, '.mini-codegraph')
     this.graph = graph
     this.getPendingFiles = getPendingFiles ?? (() => [])
@@ -52,7 +50,8 @@ export class DaemonServer {
         this.handleConnection(socket)
       })
 
-      this.server.listen(0, '127.0.0.1', () => {
+      const host = process.env.MINI_CG_HOST || '127.0.0.1'
+      this.server.listen(0, host, () => {
         const addr = this.server?.address()
         if (addr && typeof addr === 'object') {
           this.port = addr.port
@@ -69,8 +68,8 @@ export class DaemonServer {
         }
       })
 
-      this.server.on('error', (err) => {
-        logError('Daemon server error:', err)
+      this.server.on('error', (err: Error) => {
+        logError('Daemon server error', { error: err.message })
         reject(err)
       })
     })
@@ -197,7 +196,7 @@ export class DaemonServer {
     try {
       writeFileSync(join(this.dataDir, 'daemon.port'), String(this.port), 'utf-8')
     } catch (e) {
-      logError('Failed to write port file:', e)
+      logError('Failed to write port file', { error: String(e) })
     }
   }
 
@@ -205,7 +204,7 @@ export class DaemonServer {
     try {
       writeFileSync(join(this.dataDir, 'daemon.pid'), `${process.pid}\n${PACKAGE_VERSION}`, 'utf-8')
     } catch (e) {
-      logError('Failed to write pid file:', e)
+      logError('Failed to write pid file', { error: String(e) })
     }
   }
 
@@ -220,14 +219,14 @@ export class DaemonServer {
       }
       writeFileSync(lockPath, JSON.stringify(lockInfo, null, 2), 'utf-8')
     } catch (e) {
-      logError('Failed to acquire lock:', e)
+      logError('Failed to acquire lock', { error: String(e) })
     }
   }
 }
 
 class DaemonSocketTransport implements Transport {
   private buffer = ''
-  private onMessage: ((msg: any) => void) | null = null
+  private onMessage: ((msg: Record<string, unknown>) => void) | null = null
   private onClose: (() => void) | null = null
 
   constructor(private socket: Socket) {
@@ -239,7 +238,7 @@ class DaemonSocketTransport implements Transport {
         this.buffer = this.buffer.slice(newlineIdx + 1)
         if (!line) continue
         try {
-          const msg = JSON.parse(line)
+          const msg = JSON.parse(line) as Record<string, unknown>
           if (msg.type === 'hello') continue
           this.onMessage?.(msg)
         } catch { /* silent */ }
@@ -249,12 +248,12 @@ class DaemonSocketTransport implements Transport {
     socket.on('error', () => {})
   }
 
-  start(onMessage: (msg: any) => void, onClose: () => void): void {
+  start(onMessage: (msg: Record<string, unknown>) => void, onClose: () => void): void {
     this.onMessage = onMessage
     this.onClose = onClose
   }
 
-  send(response: any): void {
+  send(response: Record<string, unknown>): void {
     try {
       this.socket.write(JSON.stringify(response) + '\n')
     } catch { /* silent */ }

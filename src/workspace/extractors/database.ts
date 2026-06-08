@@ -4,7 +4,7 @@ import type { QueryManager } from '../../db/queries.js'
 export class DatabaseExtractor implements IExtractor {
   name = 'database'
 
-  async extract(projectRoot: string, queries: QueryManager): Promise<ExtractionOutput> {
+  async extract(_projectRoot: string, queries: QueryManager): Promise<ExtractionOutput> {
     const provides: ExtractionOutput['provides'] = []
     const consumes: ExtractionOutput['consumes'] = []
 

@@ -2,7 +2,6 @@ import { createConnection, type Socket } from 'node:net'
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
-import { logDebug, logInfo, logWarn, logError } from '../logger.js'
 
 export interface DaemonInfo {
   port: number
@@ -79,7 +78,8 @@ export function startDaemon(projectRoot: string): Promise<number> {
 
 export function connectToDaemon(port: number): Promise<Socket> {
   return new Promise((resolve, reject) => {
-    const socket = createConnection({ host: '127.0.0.1', port }, () => {
+    const host = process.env.MINI_CG_HOST || '127.0.0.1'
+    const socket = createConnection({ host, port }, () => {
       resolve(socket)
     })
     socket.on('error', reject)
@@ -93,7 +93,8 @@ export function connectToDaemon(port: number): Promise<Socket> {
 
 export function connectToDaemonWithVersionCheck(port: number): Promise<{ socket: Socket; version: string }> {
   return new Promise((resolve, reject) => {
-    const socket = createConnection({ host: '127.0.0.1', port }, () => {
+    const host = process.env.MINI_CG_HOST || '127.0.0.1'
+    const socket = createConnection({ host, port }, () => {
       const onData = (chunk: Buffer) => {
         const text = chunk.toString()
         const newlineIdx = text.indexOf('\n')

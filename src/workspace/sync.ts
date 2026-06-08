@@ -1,4 +1,4 @@
-import { readFileSync, existsSync, statSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import type { QueryManager } from '../db/queries.js'
@@ -13,6 +13,14 @@ import { DatabaseExtractor } from './extractors/database.js'
 import { FrontendExtractor } from './extractors/frontend.js'
 import { DatabaseMigrationExtractor } from './extractors/database-migration.js'
 import { OpenApiExtractor } from './extractors/openapi.js'
+import { FlowableExtractor } from './extractors/flowable.js'
+import { DroolsExtractor } from './extractors/drools.js'
+import { EnterpriseFrameworksExtractor } from './extractors/enterprise-frameworks.js'
+import { JibExtractor } from './extractors/jib.js'
+import { AzureDevOpsExtractor } from './extractors/azure-devops.js'
+import { LiquibaseExtractor } from './extractors/liquibase.js'
+import { CoverageExtractor } from './extractors/coverage.js'
+import { extractDependencies } from './extractors/dependencies.js'
 import { getGitChangedFiles } from '../utils.js'
 
 export class WorkspaceSync {
@@ -37,6 +45,16 @@ export class WorkspaceSync {
     frameworkExtractor.register(new FrontendExtractor())
     frameworkExtractor.register(new DatabaseMigrationExtractor())
     frameworkExtractor.register(new OpenApiExtractor())
+    frameworkExtractor.register(new FlowableExtractor())
+    frameworkExtractor.register(new DroolsExtractor())
+    frameworkExtractor.register(new EnterpriseFrameworksExtractor())
+    frameworkExtractor.register(new JibExtractor())
+    frameworkExtractor.register(new AzureDevOpsExtractor())
+    frameworkExtractor.register(new LiquibaseExtractor())
+    frameworkExtractor.register(new CoverageExtractor())
+
+    // PluginExtractorLoader is available at ./extractors/plugin-loader.js for future use
+    // Integration point: instantiate with dataDir, call scan() + runAll() in refresh()
   }
 
   private computeFileHash(filePath: string): string {
@@ -108,8 +126,24 @@ export class WorkspaceSync {
       await this.graphBuilder.refreshExternalTables(allProvides, allConsumes.get(svc) || [])
     }
 
-    const stats = this.queries['db'].prepare('SELECT COUNT(*) as count FROM external_symbols').get() as any
-    const refStats = this.queries['db'].prepare('SELECT COUNT(*) as count FROM external_references').get() as any
+    // Extract and record inter-project dependencies from build files
+    const projectNames = this.projects.map(p => p.name)
+    for (const project of this.projects) {
+      const deps = extractDependencies(project.rootPath, projectNames)
+      for (const dep of deps) {
+        this.queries.insertServiceDependency(
+          project.name,
+          dep.targetService,
+          dep.dependencyType,
+          0,
+          'pom_gradle_parse',
+          project.name
+        )
+      }
+    }
+
+    const stats = this.queries['db'].prepare('SELECT COUNT(*) as count FROM external_symbols').get() as { count: number }
+    const refStats = this.queries['db'].prepare('SELECT COUNT(*) as count FROM external_references').get() as { count: number }
 
     return { symbolsAdded: stats?.count ?? 0, refsAdded: refStats?.count ?? 0 }
   }

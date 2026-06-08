@@ -1,6 +1,6 @@
 export { damerauLevenshtein, findFuzzyMatches, extractSearchTerms, matchCamelCase, splitCamelCase } from './fuzzy.js'
 
-import { parseSearchQuery, buildFtsQuery, filterNodesByKind, filterNodesByLanguage, filterNodesByFile } from './query-parser.js'
+import { parseSearchQuery } from './query-parser.js'
 import type { ParsedQuery as PQP } from './query-parser.js'
 import { findFuzzyMatches } from './fuzzy.js'
 import { computePathRelevance } from '../generated.js'

@@ -5,7 +5,6 @@ import { resolveViaImportChain, extractJavaImports, extractTypeScriptImports } f
 import {
   resolveSpringReference,
   detectSpring,
-  extractSpringAnnotations,
   type SpringResolverContext,
 } from './frameworks/java.js'
 import {
@@ -13,11 +12,10 @@ import {
   detectVue,
   parseVueTemplate,
   extractVueRouterRoutes,
-  type VueTemplateInfo,
 } from './frameworks/vue.js'
-import { synthesizeCallbackEdges, synthesizeMyBatisEdges } from './callback-synthesizer.js'
+import { synthesizeCallbackEdges } from './callback-synthesizer.js'
 import { readFileSync } from 'node:fs'
-import { join, extname } from 'node:path'
+import { join } from 'node:path'
 
 export class ReferenceResolver {
   private queries: QueryManager
@@ -141,10 +139,7 @@ export class ReferenceResolver {
   }
 
   private resolveImport(importPath: string, node: MiniCodeGraphNode): MiniCodeGraphNode | null {
-    const ext = extname(node.filePath)
     const sourceDir = node.filePath.substring(0, node.filePath.lastIndexOf('/'))
-
-    let resolvedPath: string | null = null
 
     if (importPath.startsWith('.')) {
       const parts = importPath.split('/')

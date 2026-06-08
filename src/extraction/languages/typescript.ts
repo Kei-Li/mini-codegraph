@@ -55,7 +55,7 @@ export function parseTypeScriptFile(
     }
 
     if (nodeType === 'function_declaration' || nodeType === 'method_definition') {
-      const nameNode = node.namedChildren.find((c: any) =>
+      const nameNode = node.namedChildren.find((c: Parser.SyntaxNode) =>
         c.type === 'name' || c.type === 'property' || c.type === 'identifier'
       )
       const name = nameNode?.text ?? 'anonymous'
@@ -66,10 +66,10 @@ export function parseTypeScriptFile(
       const docstring = extractTSDoc(lines, range.startLine)
 
       const params = node.namedChildren
-        .filter((c: any) => c.type === 'formal_parameters')
-        .flatMap((c: any) => c.namedChildren
-          .filter((p: any) => p.type === 'identifier' || p.type === 'required_parameter' || p.type === 'optional_parameter')
-          .map((p: any) => p.text))
+        .filter((c: Parser.SyntaxNode) => c.type === 'formal_parameters')
+        .flatMap((c: Parser.SyntaxNode) => c.namedChildren
+          .filter((p: Parser.SyntaxNode) => p.type === 'identifier' || p.type === 'required_parameter' || p.type === 'optional_parameter')
+          .map((p: Parser.SyntaxNode) => p.text))
         .join(', ')
 
       const signature = `${isExported ? 'export ' : ''}${nodeType === 'method_definition' ? 'method' : 'function'} ${name}(${params})`.trim()
@@ -129,7 +129,7 @@ export function parseTypeScriptFile(
     }
 
     if (nodeType === 'class_declaration') {
-      const nameNode = node.namedChildren.find((c: any) => c.type === 'name')
+      const nameNode = node.namedChildren.find((c: Parser.SyntaxNode) => c.type === 'name')
       const name = nameNode?.text ?? 'Unknown'
       const parentId = scopeStack.length > 0 ? scopeStack[scopeStack.length - 1] : null
       const nodeId = `${filePath}:${name}:${range.startLine}`
@@ -166,7 +166,7 @@ export function parseTypeScriptFile(
     }
 
     if (nodeType === 'interface_declaration' || nodeType === 'type_alias_declaration') {
-      const nameNode = node.namedChildren.find((c: any) => c.type === 'name')
+      const nameNode = node.namedChildren.find((c: Parser.SyntaxNode) => c.type === 'name')
       const name = nameNode?.text ?? 'Unknown'
       const parentId = scopeStack.length > 0 ? scopeStack[scopeStack.length - 1] : null
       const nodeId = `${filePath}:${name}:${range.startLine}`
@@ -199,7 +199,7 @@ export function parseTypeScriptFile(
     }
 
     if (nodeType === 'property_signature' || nodeType === 'method_signature') {
-      const nameNode = node.namedChildren.find((c: any) =>
+      const nameNode = node.namedChildren.find((c: Parser.SyntaxNode) =>
         c.type === 'name' || c.type === 'property' || c.type === 'identifier'
       )
       const name = nameNode?.text ?? 'unknown'
@@ -231,17 +231,16 @@ export function parseTypeScriptFile(
     }
 
     if (nodeType === 'export_statement') {
-      const wc = cursor.gotoFirstChild()
-      if (wc) { visit(); cursor.gotoParent() }
+      walkChildren()
       return
     }
 
     if (nodeType === 'lexical_declaration' || nodeType === 'variable_declaration') {
-      const declarators = node.namedChildren.filter((c: any) =>
+      const declarators = node.namedChildren.filter((c: Parser.SyntaxNode) =>
         c.type === 'variable_declarator'
       )
       for (const decl of declarators) {
-        const nameChild = decl.namedChildren.find((c: any) => c.type === 'name' || c.type === 'identifier')
+        const nameChild = decl.namedChildren.find((c: Parser.SyntaxNode) => c.type === 'name' || c.type === 'identifier')
         if (!nameChild) continue
         const name = nameChild.text
         const parentId = scopeStack.length > 0 ? scopeStack[scopeStack.length - 1] : null
@@ -278,9 +277,9 @@ export function parseTypeScriptFile(
           })
         }
 
-        const valueChild = decl.namedChildren.find((c: any) => c.type === 'value')
+        const valueChild = decl.namedChildren.find((c: Parser.SyntaxNode) => c.type === 'value')
         if (valueChild) {
-          const fnChild = valueChild.namedChildren.find((c: any) => c.type === 'arrow_function')
+          const fnChild = valueChild.namedChildren.find((c: Parser.SyntaxNode) => c.type === 'arrow_function')
           if (fnChild) {
             const fnId = `${filePath}:${name}:${fnChild.startPosition.row + 1}`
             edges.push({
@@ -298,7 +297,7 @@ export function parseTypeScriptFile(
     }
 
     if (nodeType === 'call_expression') {
-      const nameNode = node.namedChildren.find((c: any) =>
+      const nameNode = node.namedChildren.find((c: Parser.SyntaxNode) =>
         c.type === 'identifier' || c.type === 'member_expression' ||
         c.type === 'property_identifier'
       )
@@ -320,28 +319,28 @@ export function parseTypeScriptFile(
     }
 
     if (nodeType === 'import_statement') {
-      const path = node.namedChildren.find((c: any) => c.type === 'string' || c.type === 'string_fragment')
+      const path = node.namedChildren.find((c: Parser.SyntaxNode) => c.type === 'string' || c.type === 'string_fragment')
       const importPath = path?.text ?? ''
-      const specifiers = node.namedChildren.filter((c: any) =>
+      const specifiers = node.namedChildren.filter((c: Parser.SyntaxNode) =>
         c.type === 'import_clause' || c.type === 'namespace_import'
       )
       const importNames: string[] = []
 
       for (const spec of specifiers) {
         if (spec.type === 'import_clause') {
-          spec.namedChildren.forEach((c: any) => {
+          spec.namedChildren.forEach((c: Parser.SyntaxNode) => {
             if (c.type === 'identifier') importNames.push(c.text)
             if (c.type === 'named_imports') {
               c.namedChildren
-                .filter((n: any) => n.type === 'import_specifier')
-                .forEach((n: any) => {
-                  const id = n.namedChildren.find((x: any) => x.type === 'identifier')
+                .filter((n: Parser.SyntaxNode) => n.type === 'import_specifier')
+                .forEach((n: Parser.SyntaxNode) => {
+                  const id = n.namedChildren.find((x: Parser.SyntaxNode) => x.type === 'identifier')
                   if (id) importNames.push(id.text)
                 })
             }
           })
         } else if (spec.type === 'namespace_import') {
-          const id = spec.namedChildren.find((c: any) => c.type === 'identifier')
+          const id = spec.namedChildren.find((c: Parser.SyntaxNode) => c.type === 'identifier')
           if (id) importNames.push(`* as ${id.text}`)
         }
       }
@@ -377,7 +376,7 @@ export function parseTypeScriptFile(
   return { nodes, edges }
 }
 
-function checkExport(node: any, source: string): boolean {
+function checkExport(node: Parser.SyntaxNode | null, source: string): boolean {
   if (!node) return false
   const lineStart = node.startPosition?.row ?? 0
   const lines = source.split('\n')
@@ -413,16 +412,16 @@ function getNodeName(nodeId: string): string {
   return parts[parts.length - 2] || nodeId
 }
 
-function findAncestorVariable(node: any, _cursor: Parser.TreeCursor): string | null {
+function findAncestorVariable(node: Parser.SyntaxNode, _cursor: Parser.TreeCursor): string | null {
   let p = node.parent
   while (p) {
-    const decl = p.namedChildren.find((c: any) =>
-      c.type === 'variable_declarator' && c.namedChildren.some((n: any) =>
-        n.type === 'value' && n.namedChildren.some((v: any) => v.id === node.id)
+    const decl = p.namedChildren.find((c: Parser.SyntaxNode) =>
+      c.type === 'variable_declarator' && c.namedChildren.some((n: Parser.SyntaxNode) =>
+        n.type === 'value' && n.namedChildren.some((v: Parser.SyntaxNode) => v.id === node.id)
       )
     )
     if (decl) {
-      const name = decl.namedChildren.find((c: any) => c.type === 'name')
+      const name = decl.namedChildren.find((c: Parser.SyntaxNode) => c.type === 'name')
       return name?.text ?? null
     }
     p = p.parent
@@ -430,12 +429,12 @@ function findAncestorVariable(node: any, _cursor: Parser.TreeCursor): string | n
   return null
 }
 
-function findEnclosingScope(node: any, filePath: string): string | null {
+function findEnclosingScope(node: Parser.SyntaxNode, filePath: string): string | null {
   let p = node.parent
   while (p) {
     if (p.type === 'function_declaration' || p.type === 'method_definition' ||
         p.type === 'arrow_function' || p.type === 'function') {
-      const nameNode = p.namedChildren.find((c: any) =>
+      const nameNode = p.namedChildren.find((c: Parser.SyntaxNode) =>
         c.type === 'name' || c.type === 'property' || c.type === 'identifier'
       )
       const name = nameNode?.text ?? 'anonymous'

@@ -126,10 +126,33 @@ export class WorkspaceGraphBuilder {
     return { symbols: Array.from(symbolMap.values()), refs }
   }
 
+  async buildServiceDependencies(): Promise<void> {
+    const db = this.queries.getDb()
+    const depEdges = db.prepare(`SELECT source, target, metadata FROM edges WHERE kind = 'maven_depends_on'`).all() as { source: string; target: string; metadata: string }[]
+    for (const e of depEdges) {
+      const srcModule = db.prepare(`SELECT module_id FROM nodes WHERE id = ?`).get(e.source) as { module_id: string } | undefined
+      const tgtModule = db.prepare(`SELECT module_id FROM nodes WHERE id = ?`).get(e.target) as { module_id: string } | undefined
+      if (srcModule && tgtModule && srcModule.module_id !== tgtModule.module_id) {
+        let meta: Record<string, any> = {}
+        try { meta = JSON.parse(e.metadata) } catch { /* ignore */ }
+        this.queries.insertServiceDependency(
+          srcModule.module_id,
+          tgtModule.module_id,
+          meta.scope || 'compile',
+          meta.optional ? 1 : 0,
+          'maven_pom',
+          srcModule.module_id
+        )
+      }
+    }
+  }
+
   async refreshExternalTables(
     allProvides: Map<string, { id: string; name: string; kind: string; signature: string }[]>,
     currentConsumes: { symbolId: string; referenceType: string; sourceLocation: string }[]
   ): Promise<void> {
+    this.queries.deleteServiceDependenciesByService(this.currentService)
+    await this.buildServiceDependencies()
     const { symbols: newSymbols, refs: newRefs } = this.buildGlobalGraph(allProvides, currentConsumes)
 
     const newSymbolMap = new Map(newSymbols.map(s => [s.id, s]))
@@ -140,14 +163,6 @@ export class WorkspaceGraphBuilder {
 
     const existingSymbolMap = new Map(existingSymbols.map(s => [s.id, s]))
     const existingRefKeySet = new Set(existingRefs.map(r => `${r.symbolName}:${r.sourceLocation}:${r.serviceName ?? ''}`))
-
-    const existingByService = new Set(
-      existingSymbols.filter(s => s.serviceName === this.currentService).map(s => s.id)
-    )
-    const existingRefsByService = new Set(
-      existingRefs.filter(r => r.serviceName === this.currentService)
-        .map(r => `${r.symbolName}:${r.sourceLocation}:${r.serviceName ?? ''}`)
-    )
 
     for (const sym of newSymbols) {
       const existing = existingSymbolMap.get(sym.id)

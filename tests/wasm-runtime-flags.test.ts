@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   isTurboshaftOOM,
   detectWasmCrash,
-} from '../src/extraction/wasm-runtime-flags.js'
+} from '../src/extraction/core/wasm-runtime-flags.js'
 
 describe('isTurboshaftOOM', () => {
   it('detects exit code 132 on Node >= 25', () => {

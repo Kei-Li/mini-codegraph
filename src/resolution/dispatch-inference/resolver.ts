@@ -5,16 +5,22 @@ import { INFERRED_EDGE_KINDS } from './types.js'
 export function mergeInferredEdges(
   queries: QueryManager,
   patterns: DispatchPattern[],
-  moduleId: string,
+  _moduleId: string,
+  minConfidence = 0,
 ): DispatchResult {
   const edges: InferredEdge[] = []
   const byProvenance: Record<string, number> = {}
   const seenEdgeKeys = new Set<string>()
+  let skippedCount = 0
 
   for (const pattern of patterns) {
     byProvenance[pattern.type] = (byProvenance[pattern.type] || 0) + 1
 
     for (const target of pattern.possibleTargets) {
+      if (target.confidence < minConfidence) {
+        skippedCount++
+        continue
+      }
       if (pattern.sourceId) {
         const edgeKind = edgeKindForProvenance(pattern.type)
         const edgeKey = `${pattern.sourceId}|${target.targetId}|${edgeKind}`
@@ -71,12 +77,16 @@ export function mergeInferredEdges(
     }
   }
 
+  if (skippedCount > 0) {
+    process.stderr.write(`  Filtered out ${skippedCount} low-confidence targets (< ${minConfidence})\n`)
+  }
   return {
     edges: deduplicated,
     patterns,
     stats: {
       totalEdges: deduplicated.length,
       totalPatterns: patterns.length,
+      filteredTargets: skippedCount,
       byProvenance,
     },
   }

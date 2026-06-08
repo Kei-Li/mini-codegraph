@@ -2,6 +2,8 @@
 
 Lightweight code knowledge graph engine — tree-sitter AST parsing, SQLite graph storage, MCP server for AI agents.
 
+> 完整文档见 [`docs/`](docs/README.md) — 架构设计、AI Agent 开发指南、架构决策记录（ADRs）
+
 ## Features
 
 - **tree-sitter AST parsing** — Java, TypeScript/TSX, Python, Vue, Kotlin

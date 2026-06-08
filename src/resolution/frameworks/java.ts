@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
-import { join, extname } from 'node:path'
+import { join } from 'node:path'
 import type { QueryManager } from '../../db/queries.js'
 import type { MiniCodeGraphNode, UnresolvedReference, AnnotationInfo, FrameworkDetectionResult } from '../../types.js'
 import { matchReference } from '../name-matcher.js'
@@ -256,7 +256,7 @@ function resolveServiceImpl(ctx: SpringResolverContext, impl: MiniCodeGraphNode)
 export function extractSpringAnnotations(
   source: string,
   filePath: string,
-  moduleId: string
+  _moduleId: string
 ): AnnotationInfo[] {
   const annotations: AnnotationInfo[] = []
   const lines = source.split('\n')
@@ -294,7 +294,7 @@ export function isSpringProject(projectRoot: string): boolean {
   return detectSpring(projectRoot) !== null
 }
 
-export function findMulitModuleProjects(parentDir: string): string[] {
+export function findMultiModuleProjects(parentDir: string): string[] {
   const modules: string[] = []
 
   // 1. Maven multi-module: parse <module> tags from parent pom.xml
