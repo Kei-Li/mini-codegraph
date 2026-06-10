@@ -7,6 +7,7 @@ export type PressureFn = () => number
 export class FileScanner {
   private knownFiles = new Map<string, { size: number; modifiedAt: number }>()
   private pressureFn: PressureFn = () => 0
+  private cachedFiles: string[] | null = null
 
   constructor(private projectRoot: string, private excludePatterns?: string[]) {}
 
@@ -20,8 +21,15 @@ export class FileScanner {
     this.pressureFn = fn
   }
 
+  private ensureScanned(): string[] {
+    if (!this.cachedFiles) {
+      this.cachedFiles = scanDirectory(this.projectRoot, undefined, this.excludePatterns)
+    }
+    return this.cachedFiles
+  }
+
   async *scan(): AsyncGenerator<string> {
-    const files = scanDirectory(this.projectRoot, undefined, this.excludePatterns)
+    const files = this.ensureScanned()
     let yielded = 0
     for (const f of files) {
       yield f
@@ -37,7 +45,7 @@ export class FileScanner {
   }
 
   async *scanWithSkip(): AsyncGenerator<string> {
-    const files = scanDirectory(this.projectRoot, undefined, this.excludePatterns)
+    const files = this.ensureScanned()
     let yielded = 0
     for (const f of files) {
       const known = this.knownFiles.get(f)
@@ -64,6 +72,6 @@ export class FileScanner {
   }
 
   get size(): number {
-    return scanDirectory(this.projectRoot, undefined, this.excludePatterns).length
+    return this.ensureScanned().length
   }
 }

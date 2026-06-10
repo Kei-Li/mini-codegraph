@@ -1,31 +1,5 @@
 import Parser from 'web-tree-sitter'
-
-export interface NodeInfo {
-  kind: string
-  name: string
-  qualifiedName: string
-  startLine: number
-  endLine: number
-  startColumn: number
-  endColumn: number
-  parentId: string | null
-  visibility: string
-  isExported: boolean
-  docstring: string
-  signature: string
-  filePath: string
-  language: string
-  id: string
-}
-
-export interface EdgeInfo {
-  source: string
-  target: string
-  kind: string
-  line: number
-  col: number
-  metadata: string
-}
+import type { NodeInfo, EdgeInfo } from './types.js'
 
 export function parseTypeScriptFile(
   tree: Parser.Tree,
@@ -56,9 +30,13 @@ export function parseTypeScriptFile(
 
     if (nodeType === 'function_declaration' || nodeType === 'method_definition') {
       const nameNode = node.namedChildren.find((c: Parser.SyntaxNode) =>
-        c.type === 'name' || c.type === 'property' || c.type === 'identifier'
+        c.type === 'name' || c.type === 'property' || c.type === 'identifier' || c.type === 'property_identifier'
       )
-      const name = nameNode?.text ?? 'anonymous'
+      const name = nameNode?.text ?? (() => {
+        const line = source.split('\n')[range.startLine - 1] ?? ''
+        const match = line.match(/(?:async\s+)?(?:function\s+)?(\w+)\s*\(/)
+        return match ? match[1] : `anonymous_${range.startLine}`
+      })()
       const parentId = scopeStack.length > 0 ? scopeStack[scopeStack.length - 1] : null
       const nodeId = `${filePath}:${name}:${range.startLine}`
 
@@ -101,7 +79,11 @@ export function parseTypeScriptFile(
     if (nodeType === 'arrow_function') {
       const parentId = scopeStack.length > 0 ? scopeStack[scopeStack.length - 1] : null
       const varParent = findAncestorVariable(node, cursor)
-      const name = varParent ?? `anonymous_${range.startLine}`
+      const name = varParent ?? (() => {
+        const line = source.split('\n')[range.startLine - 1] ?? ''
+        const match = line.match(/(?:const|let|var)\s+(\w+)\s*=/)
+        return match ? match[1] : `anonymous_${range.startLine}`
+      })()
       const nodeId = `${filePath}:${name}:${range.startLine}`
 
       nodes.push({
@@ -129,8 +111,14 @@ export function parseTypeScriptFile(
     }
 
     if (nodeType === 'class_declaration') {
-      const nameNode = node.namedChildren.find((c: Parser.SyntaxNode) => c.type === 'name')
-      const name = nameNode?.text ?? 'Unknown'
+      const nameNode =
+        (node.firstNamedChild?.type === 'name' ? node.firstNamedChild : null) ??
+        node.namedChildren.find((c: Parser.SyntaxNode) => c.type === 'name')
+      const name = nameNode?.text ?? (() => {
+        const line = source.split('\n')[range.startLine - 1] ?? ''
+        const match = line.match(/(?:class|interface|type)\s+(\w+)/)
+        return match?.[1] ?? 'Unknown'
+      })()
       const parentId = scopeStack.length > 0 ? scopeStack[scopeStack.length - 1] : null
       const nodeId = `${filePath}:${name}:${range.startLine}`
 
@@ -166,8 +154,14 @@ export function parseTypeScriptFile(
     }
 
     if (nodeType === 'interface_declaration' || nodeType === 'type_alias_declaration') {
-      const nameNode = node.namedChildren.find((c: Parser.SyntaxNode) => c.type === 'name')
-      const name = nameNode?.text ?? 'Unknown'
+      const nameNode =
+        (node.firstNamedChild?.type === 'name' ? node.firstNamedChild : null) ??
+        node.namedChildren.find((c: Parser.SyntaxNode) => c.type === 'name')
+      const name = nameNode?.text ?? (() => {
+        const line = source.split('\n')[range.startLine - 1] ?? ''
+        const match = line.match(/(?:interface|type)\s+(\w+)/)
+        return match?.[1] ?? 'Unknown'
+      })()
       const parentId = scopeStack.length > 0 ? scopeStack[scopeStack.length - 1] : null
       const nodeId = `${filePath}:${name}:${range.startLine}`
 
@@ -304,11 +298,11 @@ export function parseTypeScriptFile(
       if (!nameNode) return
       const callName = nameNode.text
 
-      const callerInfo = findEnclosingScope(node, filePath)
+      const callerInfo = findEnclosingScope(node, filePath, source)
       if (callerInfo) {
         edges.push({
           source: callerInfo,
-          target: `${filePath}:${callName}`,
+          target: callName,
           kind: 'calls',
           line: range.startLine,
           col: range.startColumn,
@@ -429,15 +423,20 @@ function findAncestorVariable(node: Parser.SyntaxNode, _cursor: Parser.TreeCurso
   return null
 }
 
-function findEnclosingScope(node: Parser.SyntaxNode, filePath: string): string | null {
+function findEnclosingScope(node: Parser.SyntaxNode, filePath: string, source: string): string | null {
   let p = node.parent
   while (p) {
     if (p.type === 'function_declaration' || p.type === 'method_definition' ||
         p.type === 'arrow_function' || p.type === 'function') {
       const nameNode = p.namedChildren.find((c: Parser.SyntaxNode) =>
-        c.type === 'name' || c.type === 'property' || c.type === 'identifier'
+        c.type === 'name' || c.type === 'property' || c.type === 'identifier' || c.type === 'property_identifier'
       )
-      const name = nameNode?.text ?? 'anonymous'
+      const name = nameNode?.text ?? (() => {
+        const lineNum = p.startPosition.row
+        const line = source.split('\n')[lineNum] ?? ''
+        const match = line.match(/(?:async\s+)?(?:function\s+)?(\w+)\s*\(/)
+        return match ? match[1] : `anonymous_${lineNum + 1}`
+      })()
       return `${filePath}:${name}:${p.startPosition.row + 1}`
     }
     p = p.parent

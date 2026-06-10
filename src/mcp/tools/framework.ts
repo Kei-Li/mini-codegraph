@@ -1,4 +1,5 @@
 import type { ToolDefinition } from './shared.js'
+import { generateArchitectureDiagram, generateServiceDependencyDiagram, generateSequenceDiagram, generateCacheTopologyDiagram, generateTxPropagationDiagram, getAllMermaidDiagrams, generateFullTraceDiagram } from '../../visualization/mermaid.js'
 
 export function createFrameworkTools(): ToolDefinition[] {
   return [
@@ -131,17 +132,50 @@ export function createFrameworkTools(): ToolDefinition[] {
       },
     },
     {
-      name: 'mini_cg_dispatch',
-      description: 'Find dispatch/inference targets for a given interface or base class. Traces strategy pattern, AOP, factory method, and reflective dispatch.',
+      name: 'mini_cg_mermaid',
+      description: 'Generate Mermaid.js diagrams for architecture visualization. Supports architecture, service-dependency, sequence, trace, cache, and transaction diagrams.',
       inputSchema: {
         type: 'object',
         properties: {
-          symbol: { type: 'string', description: 'Interface or base class name' },
+          diagram: { type: 'string', description: 'Diagram type: "architecture" (default), "dependencies", "sequence", "trace", "cache", "transaction", "all"' },
+          serviceFilter: { type: 'string', description: 'Service name filter (for trace diagram)' },
+          serviceName: { type: 'string', description: 'Service name (for sequence diagram)' },
         },
-        required: ['symbol'],
       },
-      handler: async () => {
-        return { supported: true, note: 'Use mini_cg_callers and mini_cg_callees for direct call chain analysis' }
+      handler: async (args, graph) => {
+        const diagramType = typeof args.diagram === 'string' ? args.diagram : 'architecture'
+        const serviceFilter = typeof args.serviceFilter === 'string' ? args.serviceFilter : undefined
+        const serviceName = typeof args.serviceName === 'string' ? args.serviceName : ''
+        const queries = graph.getQueries()
+
+        if (diagramType === 'all') {
+          const diagrams = getAllMermaidDiagrams(queries)
+          return {
+            architecture: diagrams.architecture,
+            dependencies: diagrams.dependencies,
+            sequence: diagrams.sequence,
+            trace: diagrams.trace,
+            cache: diagrams.cache,
+            transaction: diagrams.transaction,
+          }
+        }
+
+        switch (diagramType) {
+          case 'architecture':
+            return { type: 'architecture', diagram: generateArchitectureDiagram(queries) }
+          case 'dependencies':
+            return { type: 'dependencies', diagram: generateServiceDependencyDiagram(queries) }
+          case 'sequence':
+            return { type: 'sequence', diagram: generateSequenceDiagram(queries, serviceName) }
+          case 'trace':
+            return { type: 'trace', diagram: generateFullTraceDiagram(queries, serviceFilter) }
+          case 'cache':
+            return { type: 'cache', diagram: generateCacheTopologyDiagram(queries) }
+          case 'transaction':
+            return { type: 'transaction', diagram: generateTxPropagationDiagram(queries) }
+          default:
+            return { type: 'architecture', diagram: generateArchitectureDiagram(queries) }
+        }
       },
     },
   ]

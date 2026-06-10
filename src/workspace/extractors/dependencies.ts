@@ -1,5 +1,7 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
+import type { IExtractor, ExtractionOutput } from './frameworks.js'
+import type { QueryManager } from '../../db/queries.js'
 
 export interface ParsedDependency {
   groupId: string
@@ -118,4 +120,67 @@ function extractXmlValue(xml: string, tag: string): string | undefined {
   const regex = new RegExp(`<${tag}>([^<]*)</${tag}>`)
   const m = regex.exec(xml)
   return m ? m[1].trim() : undefined
+}
+
+export class DependenciesExtractor implements IExtractor {
+  name = 'dependencies'
+
+  async extract(projectRoot: string, _queries: QueryManager): Promise<ExtractionOutput> {
+    const provides: ExtractionOutput['provides'] = []
+    const consumes: ExtractionOutput['consumes'] = []
+
+    const deps = extractDependencies(projectRoot, [])
+    const knownProjects = new Set<string>()
+
+    const pomPath = join(projectRoot, 'pom.xml')
+    const gradleFiles = ['build.gradle', 'build.gradle.kts']
+
+    if (existsSync(pomPath)) {
+      const parsedDeps = parsePomDependencies(pomPath)
+      for (const dep of parsedDeps) {
+        provides.push({
+          id: `dep.pom.${dep.groupId}.${dep.artifactId}`,
+          name: `${dep.groupId}:${dep.artifactId}`,
+          kind: 'maven_dependency',
+          signature: `version=${dep.version ?? 'latest'}, scope=${dep.scope ?? 'compile'}`,
+        })
+        knownProjects.add(dep.artifactId)
+      }
+    }
+
+    for (const gf of gradleFiles) {
+      const gPath = join(projectRoot, gf)
+      if (existsSync(gPath)) {
+        const parsedDeps = parseGradleDependencies(gPath)
+        for (const dep of parsedDeps) {
+          if (dep.groupId === 'project') {
+            provides.push({
+              id: `dep.gradle.project.${dep.artifactId}`,
+              name: dep.artifactId,
+              kind: 'gradle_project_dep',
+              signature: `scope=${dep.scope ?? 'compile'}`,
+            })
+          } else {
+            provides.push({
+              id: `dep.gradle.${dep.groupId}.${dep.artifactId}`,
+              name: `${dep.groupId}:${dep.artifactId}`,
+              kind: 'gradle_dependency',
+              signature: `scope=${dep.scope ?? 'compile'}`,
+            })
+          }
+          knownProjects.add(dep.artifactId)
+        }
+      }
+    }
+
+    for (const dep of deps) {
+      consumes.push({
+        symbolId: dep.targetService,
+        referenceType: dep.dependencyType,
+        sourceLocation: `${projectRoot}/pom.xml`,
+      })
+    }
+
+    return { provides, consumes }
+  }
 }

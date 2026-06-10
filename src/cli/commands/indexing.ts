@@ -66,13 +66,16 @@ export async function handleIndex(path: string, options: { force?: boolean; chan
     return
   }
 
-  if (!MiniCodeGraph.findProjectRoot(resolvedPath) && !['pom.xml', 'build.gradle', 'package.json', 'Cargo.toml', 'pyproject.toml', 'go.mod', 'CMakeLists.txt'].some(f => existsSync(join(resolvedPath, f)))) {
-    logError(`Error: ${resolvedPath} does not appear to be a valid project root (no .mini-codegraph/ or known build file found).`)
-    logError('Run `mini-codegraph init <path>` first, or specify the correct project root.')
-    process.exit(1)
+  const projectRoot = MiniCodeGraph.findProjectRoot(resolvedPath)
+  if (!projectRoot) {
+    if (!['pom.xml', 'build.gradle', 'package.json', 'Cargo.toml', 'pyproject.toml', 'go.mod', 'CMakeLists.txt'].some(f => existsSync(join(resolvedPath, f)))) {
+      logError(`Error: ${resolvedPath} does not appear to be a valid project root (no .mini-codegraph/ or known build file found).`)
+      logError('Run `mini-codegraph init <path>` first, or specify the correct project root.')
+      process.exit(1)
+    }
   }
 
-  const cg = MiniCodeGraph.init(resolvedPath)
+  const cg = projectRoot ? MiniCodeGraph.open(projectRoot)! : MiniCodeGraph.init(resolvedPath)
   const result = await cg.index(excludePatterns, fastMode)
 
   const stats = cg.getGraph().getStats()

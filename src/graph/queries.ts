@@ -1,7 +1,7 @@
 import type { QueryManager } from '../db/queries.js'
 import type { MiniCodeGraphNode } from '../types.js'
 import { GraphTraverser } from './traversal.js'
-import { CodeAnalyzer } from '../analysis.js'
+import { CodeAnalyzer } from '../analysis/index.js'
 import { runQualifiedSearch, fuzzySearchFallback } from '../search/index.js'
 import { safeJsonParse } from '../utils.js'
 import { logError } from '../logger.js'
@@ -248,19 +248,19 @@ export class GraphQueryManager {
       .map(n => ({ node: n, snippets: [n.signature, n.docstring].filter(Boolean), score: 0 }))
   }
 
-  getCyclomaticComplexity(node: MiniCodeGraphNode): import('../analysis.js').ComplexityResult | null {
+  getCyclomaticComplexity(node: MiniCodeGraphNode): import('../analysis/index.js').ComplexityResult | null {
     return this.analyzer.computeCyclomaticComplexity(node)
   }
 
-  findCircularDeps(): import('../analysis.js').CircularDepResult[] {
+  findCircularDeps(): import('../analysis/index.js').CircularDepResult[] {
     return this.analyzer.findCircularDeps()
   }
 
-  findDeadImports(): import('../analysis.js').DeadImportResult[] {
+  findDeadImports(): import('../analysis/index.js').DeadImportResult[] {
     return this.analyzer.findDeadImports()
   }
 
-  async findEntryPoints(): Promise<import('../analysis.js').EntryPointResult[]> {
+  async findEntryPoints(): Promise<import('../analysis/index.js').EntryPointResult[]> {
     return this.analyzer.findEntryPoints()
   }
 

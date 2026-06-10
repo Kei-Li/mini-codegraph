@@ -20,7 +20,7 @@ import { JibExtractor } from './extractors/jib.js'
 import { AzureDevOpsExtractor } from './extractors/azure-devops.js'
 import { LiquibaseExtractor } from './extractors/liquibase.js'
 import { CoverageExtractor } from './extractors/coverage.js'
-import { extractDependencies } from './extractors/dependencies.js'
+import { DependenciesExtractor, extractDependencies } from './extractors/dependencies.js'
 import { getGitChangedFiles } from '../utils.js'
 
 export class WorkspaceSync {
@@ -52,9 +52,10 @@ export class WorkspaceSync {
     frameworkExtractor.register(new AzureDevOpsExtractor())
     frameworkExtractor.register(new LiquibaseExtractor())
     frameworkExtractor.register(new CoverageExtractor())
+    frameworkExtractor.register(new DependenciesExtractor())
 
-    // PluginExtractorLoader is available at ./extractors/plugin-loader.js for future use
-    // Integration point: instantiate with dataDir, call scan() + runAll() in refresh()
+    // PluginLoader is available at ./extractors/plugin-loader.js for dynamic loading
+    // Integration point: new PluginLoader({ autoRegister: true }).loadAll('/path/to/plugins')
   }
 
   private computeFileHash(filePath: string): string {

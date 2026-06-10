@@ -8,4 +8,4 @@ export {
   generateGatewayDiagram,
   buildFanoutMermaid,
   getAllMermaidDiagrams,
-} from './visualization/mermaid.js'
+} from './mermaid.js'

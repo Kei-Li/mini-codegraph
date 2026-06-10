@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { CodeAnalyzer } from '../src/analysis.js'
+import { CodeAnalyzer } from '../src/analysis/index.js'
 import type { MiniCodeGraphNode } from '../src/types.js'
 import type { QueryManager } from '../src/db/queries.js'
 

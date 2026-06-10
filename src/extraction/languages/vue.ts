@@ -1,5 +1,6 @@
 import Parser from 'web-tree-sitter'
-import { parseTypeScriptFile, type NodeInfo, type EdgeInfo } from './typescript.js'
+import { parseTypeScriptFile } from './typescript.js'
+import type { NodeInfo, EdgeInfo } from './types.js'
 
 export interface VueScriptBlock {
   content: string

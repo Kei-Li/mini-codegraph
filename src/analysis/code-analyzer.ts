@@ -1,5 +1,5 @@
-import type { QueryManager } from './db/queries.js'
-import type { MiniCodeGraphNode } from './types.js'
+import type { QueryManager } from '../db/queries.js'
+import type { MiniCodeGraphNode } from '../types.js'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -225,7 +225,7 @@ export class CodeAnalyzer {
     }
 
     try {
-      const { detectRoutes } = await import('./extraction/core/routes.js')
+      const { detectRoutes } = await import('../extraction/core/routes.js')
       const routes = detectRoutes(this.projectRoot, this.queries)
       for (const route of routes) {
         entries.push({

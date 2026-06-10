@@ -5,21 +5,16 @@ import type { QueryManager } from '../../db/queries.js'
 import { indexOpenApiContracts } from '../infra/openapi-parser.js'
 import { indexDeployment } from '../infra/docker-parser.js'
 import { indexK8sResources } from '../infra/k8s-parser.js'
-import { indexGatewayRoutes } from '../frameworks/gateway-parser.js'
 import { indexQueueBindings } from '../middleware/message-queue-parser.js'
-import { indexConfigProperties } from '../frameworks/config-extractor.js'
-import { indexTransactionalAnnotations, findTxBoundaryConflicts } from '../frameworks/transaction-extractor.js'
-import { indexCacheAnnotations } from '../frameworks/cache-extractor.js'
 import { indexGrpcProtoFiles, findProtoDir } from '../infra/grpc-parser.js'
-import { indexSpringAutoConfiguration } from '../frameworks/autoconfig-extractor.js'
 import { parsePomXml, indexMavenDependencies } from '../infra/maven-parser.js'
 import { indexGradleModules } from '../infra/gradle-parser.js'
-import { indexCloudConfigBindings, detectBootstrapConfig } from '../frameworks/cloud-config-extractor.js'
-import { indexLoadBalancerClients, resolveLbUris } from '../frameworks/loadbalancer-extractor.js'
 import { indexK8sNetworkResources } from '../infra/k8s-network-extractor.js'
 import { indexRepositoryRestEndpoints } from '../data/jpa-extractor.js'
-import { indexActuatorEndpoints } from '../frameworks/config-extractor.js'
 import { findMyBatisMapperDir, indexMyBatisMappers } from '../data/mybatis-extractor.js'
+import { indexGatewayRoutes, indexCloudConfigBindings, detectBootstrapConfig, indexLoadBalancerClients, resolveLbUris } from '../frameworks/spring-cloud-extractor.js'
+import { indexConfigProperties, indexTransactionalAnnotations, findTxBoundaryConflicts, indexSpringAutoConfiguration, indexActuatorEndpoints } from '../frameworks/spring-data-extractor.js'
+import { indexCacheAnnotations } from '../frameworks/spring-web-extractor.js'
 import type { MessageQueueBinding } from '../../types.js'
 import { indexI18n } from '../frontend/vue-i18n-extractor.js'
 import { findFiles } from '../../utils.js'
@@ -31,8 +26,6 @@ export async function runPostProcessing(
   moduleId: string | undefined,
   files: string[],
 ): Promise<void> {
-  if (files.length === 0) return
-
   const mid = moduleId || 'default'
 
   const postSteps = [
@@ -105,7 +98,7 @@ export async function runPostProcessing(
 
   nextPostStep('Spring beans')
   try {
-    const { indexSpringBeans } = await import('../frameworks/spring-bean-extractor.js')
+    const { indexSpringBeans } = await import('../frameworks/spring-data-extractor.js')
     const beanResult = indexSpringBeans(queries, mid)
     if (beanResult.beans > 0 || beanResult.injections > 0) {
       process.stderr.write(`  Found ${beanResult.beans} stereotype beans, ${beanResult.injections} @Autowired injection edges\n`)
@@ -312,7 +305,7 @@ export async function runPostProcessing(
   clearProgressTimer()
 }
 
-interface ModuleInfo {
+interface ProcessingModuleInfo {
   id: string
   name: string
   rootPath: string
@@ -323,7 +316,7 @@ interface ModuleInfo {
 export async function runMultiModulePostProcessing(
   queries: QueryManager,
   _parentDir: string,
-  modules: ModuleInfo[],
+  modules: ProcessingModuleInfo[],
   _allModuleIds: string[],
 ): Promise<void> {
   const routeModule = modules.find(m => m.language === 'vue')

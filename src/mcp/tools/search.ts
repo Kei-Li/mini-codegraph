@@ -111,19 +111,6 @@ export function createSearchTools(): ToolDefinition[] {
       },
     },
     {
-      name: 'mini_cg_explore',
-      description: 'Explore workspace structure by project/module/layer. Use this when you need to understand the overall project layout before making changes.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: 'Area or module to explore' },
-        },
-      },
-      handler: async () => {
-        return { supported: true, note: 'Use mini_cg_search for focused queries' }
-      },
-    },
-    {
       name: 'mini_cg_semantic_search',
       description: 'Semantic search across codebase using natural language queries. (Feature coming in future release)',
       inputSchema: {

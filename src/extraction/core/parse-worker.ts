@@ -10,16 +10,44 @@ import { computeContentHash } from '../../utils.js'
 import { logWarn } from '../../logger.js'
 import type { WorkerRequest } from './worker-types.js'
 
+process.on('uncaughtException', (err) => {
+  parentPort?.postMessage({ type: 'worker-error', error: `UNCAUGHT: ${err.message}\n${err.stack}` })
+})
+process.on('unhandledRejection', (err) => {
+  parentPort?.postMessage({ type: 'worker-error', error: `UNHANDLED: ${err}` })
+})
+process.on('exit', (code) => {
+  // Synchronous write because async postMessage may not work during exit
+  try { process.stderr.write(`[worker-exit] code=${code}\n`) } catch { /* best-effort */ }
+})
+
 const grammarLoader = new GrammarLoader()
 let grammarInitialized = false
 
 const parseCounts = new Map<string, number>()
-const PARSER_RESET_INTERVAL = 5000
-const HEARTBEAT_INTERVAL = 5000
+const PARSER_RESET_INTERVAL = 500
 
-setInterval(() => parentPort?.postMessage({ type: 'heartbeat' }), HEARTBEAT_INTERVAL)
+setInterval(() => parentPort?.postMessage({ type: 'heartbeat' }), 5_000)
 
-parentPort?.on('message', async (msg: WorkerRequest) => {
+let processing = false
+const pendingQueue: WorkerRequest[] = []
+
+function processNext(): void {
+  if (processing || pendingQueue.length === 0) return
+  processing = true
+  const msg = pendingQueue.shift()!
+  handleMessage(msg).finally(() => {
+    processing = false
+    processNext()
+  })
+}
+
+parentPort?.on('message', (msg: WorkerRequest) => {
+  pendingQueue.push(msg)
+  processNext()
+})
+
+async function handleMessage(msg: WorkerRequest): Promise<void> {
   if (msg.type === 'init') {
     try {
       await grammarLoader.init()
@@ -52,19 +80,20 @@ parentPort?.on('message', async (msg: WorkerRequest) => {
     }
 
     try {
-      const source = readFileSync(msg.absolutePath, 'utf-8')
       const stat = statSync(msg.absolutePath)
-      const contentHash = computeContentHash(source)
-
-      if (source.length > 5_242_880) {
-        logWarn(`File exceeds size limit: ${msg.absolutePath} (${(source.length / 1024 / 1024).toFixed(1)}MB, limit 5MB)`)
+      const fileSizeMB = stat.size / 1024 / 1024
+      if (stat.size > 10_485_760) {
+        logWarn(`File exceeds size limit: ${msg.absolutePath} (${fileSizeMB.toFixed(1)}MB, limit 10MB)`)
         parentPort?.postMessage({
           type: 'parse-result',
           id: msg.id,
-          error: `File exceeds 5MB size limit (${(source.length / 1024 / 1024).toFixed(1)}MB)`,
+          error: `File exceeds 10MB size limit (${fileSizeMB.toFixed(1)}MB)`,
         })
         return
       }
+
+      const source = readFileSync(msg.absolutePath, 'utf-8')
+      const contentHash = computeContentHash(source)
 
       const parser = await grammarLoader.loadGrammar(msg.grammarName)
       const tree = parser.parse(source)
@@ -93,19 +122,21 @@ parentPort?.on('message', async (msg: WorkerRequest) => {
         id: msg.id,
         result: parseResult,
         contentHash,
+        source,
         stat: { size: stat.size, mtimeMs: stat.mtimeMs },
       })
     } catch (e) {
+      const isMemoryError = String(e).includes('memory access out of bounds') || String(e).includes('out of memory')
       parentPort?.postMessage({
         type: 'parse-result',
         id: msg.id,
         error: String(e),
-        fatal: String(e).includes('memory access out of bounds') || String(e).includes('out of memory'),
+        fatal: isMemoryError,
       })
 
-      if (String(e).includes('memory access out of bounds') || String(e).includes('out of memory')) {
-        process.exit(1)
+      if (isMemoryError) {
+        grammarLoader.resetParser(msg.grammarName)
       }
     }
   }
-})
+}

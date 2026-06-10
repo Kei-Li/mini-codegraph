@@ -316,19 +316,366 @@ export function createWorkspaceTools(): ToolDefinition[] {
         }
       },
     },
+    createWorkspaceStatusHandler(),
     {
-      name: 'mini_cg_lint',
-      description: 'Check architecture rules and layer violations. Enforces dependency rules defined in workspace config. (Feature coming in future release)',
+      name: 'mini_cg_summary',
+      description: 'Show project/workspace summary with overview of modules, entry points, frameworks, and key metrics',
       inputSchema: {
         type: 'object',
         properties: {
-          scope: { type: 'string', description: 'Lint scope: "all" or module name' },
+          scope: { type: 'string', description: '"project" (default) or "workspace"' },
         },
       },
-      handler: async () => {
-        return { supported: false, note: 'Architecture lint checks can be configured via workspace.yml' }
+      handler: async (args, graph) => {
+        const scope = typeof args.scope === 'string' ? args.scope : 'project'
+        const qm = graph.getQueries()
+        const stats = qm.getStats()
+        const modules = qm.getAllModules()
+        const allNodes = qm.getAllNodes()
+        const entryPoints: unknown[] = []
+        const externalSymbols = qm.getAllExternalSymbols()
+        const languages = new Set(allNodes.map(n => n.language).filter(Boolean))
+        const kindCounts = new Map<string, number>()
+        for (const n of allNodes) {
+          kindCounts.set(n.kind, (kindCounts.get(n.kind) || 0) + 1)
+        }
+        return {
+          scope,
+          projectRoot: graph.getProjectRoot(),
+          stats,
+          languages: [...languages],
+          moduleCount: modules.length,
+          modules: modules.map(m => ({ id: m.id, name: m.name, language: m.language, buildSystem: m.buildSystem })),
+          symbolBreakdown: Object.fromEntries(kindCounts),
+          entryPointCount: entryPoints.length,
+          externalSymbolCount: externalSymbols.length,
+        }
       },
     },
-    createWorkspaceStatusHandler(),
+    {
+      name: 'mini_cg_metrics',
+      description: 'Compute code metrics including cyclomatic complexity hotspots, circular deps, dead imports, and hot paths',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          type: { type: 'string', description: 'Metric type: "complexity", "circular-deps", "dead-imports", "hot-paths", "all" (default)' },
+          limit: { type: 'number', description: 'Max results (default: 20, max: 100)' },
+        },
+      },
+      handler: async (args, graph) => {
+        const metricType = typeof args.type === 'string' ? args.type : 'all'
+        const rawLimit = typeof args.limit === 'number' ? args.limit : 20
+        const limit = Math.min(rawLimit, 100)
+        const result: Record<string, unknown> = {}
+
+        if (metricType === 'all' || metricType === 'complexity') {
+          const allNodes = graph.getQueries().getAllNodes()
+          const funcNodes = allNodes.filter(n => ['function', 'method', 'constructor'].includes(n.kind))
+          const complexities = funcNodes
+            .map(n => ({ node: n, result: graph.getCyclomaticComplexity(n) }))
+            .filter(x => x.result !== null)
+            .sort((a, b) => (b.result?.complexity ?? 0) - (a.result?.complexity ?? 0))
+            .slice(0, limit)
+            .map(x => x.result)
+          result.complexityHotspots = complexities
+        }
+
+        if (metricType === 'all' || metricType === 'circular-deps') {
+          result.circularDeps = graph.findCircularDeps().slice(0, limit)
+        }
+
+        if (metricType === 'all' || metricType === 'dead-imports') {
+          result.deadImports = graph.findDeadImports().slice(0, limit)
+        }
+
+        if (metricType === 'all' || metricType === 'hot-paths') {
+          const allNodes = graph.getQueries().getAllNodes()
+          const callerCounts = allNodes
+            .map(n => ({ name: n.name, filePath: n.filePath, callers: graph.getCallers(n.id).length }))
+            .filter(n => n.callers > 0)
+            .sort((a, b) => b.callers - a.callers)
+            .slice(0, limit)
+          result.hotPaths = callerCounts
+        }
+
+        return result
+      },
+    },
+    {
+      name: 'mini_cg_search_files',
+      description: 'Search files by path pattern, content keyword, or language. Faster than mini_cg_files for filtered queries.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          pattern: { type: 'string', description: 'Glob pattern for file path (e.g. "src/**/*Controller*")' },
+          language: { type: 'string', description: 'Filter by language (e.g. "java", "typescript", "python")' },
+          limit: { type: 'number', description: 'Max results (default: 50, max: 500)' },
+        },
+      },
+      handler: async (args, graph) => {
+        const pattern = typeof args.pattern === 'string' ? args.pattern : undefined
+        const language = typeof args.language === 'string' ? args.language : undefined
+        const { limit: rawLimit } = args
+        const safeLimit = Math.min(Math.max(1, rawLimit ?? 50), 500)
+        let files = graph.getFileListing(pattern)
+        if (language) {
+          files = files.filter(f => f.language?.toLowerCase() === language.toLowerCase())
+        }
+        const items = files.slice(0, safeLimit)
+        return {
+          files: items,
+          total: files.length,
+          truncated: files.length > safeLimit,
+        }
+      },
+    },
+    {
+      name: 'mini_cg_related_tests',
+      description: 'Find test files related to a given source file or symbol. Shows both direct and transitive test relationships.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          symbol: { type: 'string', description: 'Symbol name to find related tests for' },
+          filePath: { type: 'string', description: 'Alternative: source file path' },
+          minConfidence: { type: 'number', description: 'Minimum confidence threshold 0-1 (default: 0)' },
+          limit: { type: 'number', description: 'Max results (default: 50, max: 500)' },
+        },
+      },
+      handler: async (args, graph) => {
+        const symbol = typeof args.symbol === 'string' ? args.symbol.slice(0, 200) : ''
+        const filePath = typeof args.filePath === 'string' ? args.filePath.slice(0, 500) : ''
+        const minConfidence = typeof args.minConfidence === 'number' ? Math.max(0, Math.min(1, args.minConfidence)) : 0
+        const { limit: rawLimit } = args
+        if (!symbol && !filePath) return { error: 'Either symbol or filePath is required' }
+        const sourceFiles: string[] = []
+        if (filePath) {
+          sourceFiles.push(filePath)
+        } else {
+          const results = graph.search(symbol, 10)
+          sourceFiles.push(...results.map(r => r.node.filePath).filter(Boolean))
+        }
+        if (sourceFiles.length === 0) return { error: 'No source files found' }
+        const all = graph.findAffectedTestFiles(sourceFiles)
+        const filtered = minConfidence > 0 ? all.filter(r => r.confidence >= minConfidence) : all
+        const safeLimit = Math.min(Math.max(1, rawLimit ?? 50), 500)
+        const items = filtered.slice(0, safeLimit)
+        return {
+          sourceFiles,
+          results: items.map(r => ({
+            testFile: r.testFile,
+            matchedSymbols: r.matchedSymbols,
+            confidence: Math.round(r.confidence * 100) / 100,
+          })),
+          total: filtered.length,
+          truncated: filtered.length > safeLimit,
+        }
+      },
+    },
+    {
+      name: 'mini_cg_recent_changes',
+      description: 'Show recently changed files in the workspace. Lists files modified in recent git commits with author, timestamp, and commit message.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          maxCommits: { type: 'number', description: 'Max commits to scan (default: 30, max: 200)' },
+          maxFiles: { type: 'number', description: 'Max changed files to return (default: 50, max: 500)' },
+          since: { type: 'string', description: 'Date/ref since when (e.g. "7.days", "2024-01-01")' },
+        },
+      },
+      handler: async (args, graph) => {
+        const rawMaxCommits = typeof args.maxCommits === 'number' ? args.maxCommits : 30
+        const rawMaxFiles = typeof args.maxFiles === 'number' ? args.maxFiles : 50
+        const since = typeof args.since === 'string' ? args.since.slice(0, 50) : ''
+        const maxCommits = Math.min(rawMaxCommits, 200)
+        const maxFiles = Math.min(rawMaxFiles, 500)
+        const projectRoot = graph.getProjectRoot()
+        try {
+          const sinceArg = since ? [`--since=${since}`] : []
+          const output = execFileSync('git', [
+            'log', '--name-only', '--pretty=format:%H|%an|%ae|%ai|%s',
+            `--max-count=${maxCommits}`, ...sinceArg, '--relative',
+          ], { cwd: projectRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).trim()
+          if (!output) return { changes: [], totalCommits: 0, totalFiles: 0 }
+          const commits: { hash: string; author: string; email: string; date: string; message: string; files: string[] }[] = []
+          const lines = output.split('\n')
+          let currentCommit: { hash: string; author: string; email: string; date: string; message: string; files: string[] } | null = null
+          for (const line of lines) {
+            if (line.includes('|')) {
+              if (currentCommit) commits.push(currentCommit)
+              const parts = line.split('|')
+              currentCommit = { hash: parts[0], author: parts[1], email: parts[2], date: parts[3], message: parts[4] || '', files: [] }
+            } else if (line.trim() && currentCommit) {
+              currentCommit.files.push(line.trim())
+            }
+          }
+          if (currentCommit) commits.push(currentCommit)
+          const allFiles = [...new Set(commits.flatMap(c => c.files))].slice(0, maxFiles)
+          return { commits: commits.slice(0, maxCommits), totalCommits: commits.length, files: allFiles, totalFiles: allFiles.length }
+        } catch (err) {
+          const msg = (err as Error).message
+          if (msg.includes('not a git repository')) return { error: 'Not a git repository' }
+          return { error: `Git log failed: ${msg}` }
+        }
+      },
+    },
+    {
+      name: 'mini_cg_unresolved_refs',
+      description: 'List unresolved symbols references in the codebase — symbols that are referenced but not defined in any indexed file.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          moduleId: { type: 'string', description: 'Filter by module (optional)' },
+          kind: { type: 'string', description: 'Filter by reference kind (optional)' },
+          limit: { type: 'number', description: 'Max results (default: 50, max: 500)' },
+        },
+      },
+      handler: async (args, graph) => {
+        const qm = graph.getQueries()
+        const { moduleId, kind, limit: rawLimit } = args
+        const safeLimit = Math.min(Math.max(1, rawLimit ?? 50), 500)
+        const allRefs = (qm.getUnresolvedRefs?.() ?? []) as { referenceName: string; kind: string; filePath: string; line: number; moduleId?: string }[]
+        let filtered = allRefs as { referenceName: string; kind: string; filePath: string; line: number; moduleId?: string }[]
+        if (moduleId) filtered = filtered.filter(r => r.moduleId === moduleId)
+        if (kind) filtered = filtered.filter(r => r.kind === kind)
+        const items = filtered.slice(0, safeLimit)
+        return {
+          unresolvedRefs: items.map(r => ({
+            name: r.referenceName,
+            kind: r.kind,
+            filePath: r.filePath,
+            line: r.line,
+            moduleId: r.moduleId,
+          })),
+          total: filtered.length,
+          truncated: filtered.length > safeLimit,
+        }
+      },
+    },
+    {
+      name: 'mini_cg_export',
+      description: 'Export code graph data in structured format (JSON, CSV, DOT) for external analysis tooling',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          format: { type: 'string', description: 'Export format: "json" (default), "csv", "dot"' },
+          scope: { type: 'string', description: 'Scope: "nodes" (default), "edges", "files", "all"' },
+          moduleId: { type: 'string', description: 'Filter by module (optional)' },
+          limit: { type: 'number', description: 'Max items (default: 1000, max: 10000)' },
+        },
+      },
+      handler: async (args, graph) => {
+        const format = typeof args.format === 'string' ? args.format : 'json'
+        const scope = typeof args.scope === 'string' ? args.scope : 'nodes'
+        const moduleId = typeof args.moduleId === 'string' ? args.moduleId : undefined
+        const rawLimit = typeof args.limit === 'number' ? args.limit : 1000
+        const limit = Math.min(rawLimit, 10000)
+        const qm = graph.getQueries()
+
+        if (format === 'csv') {
+          if (scope === 'nodes' || scope === 'all') {
+            let nodes = qm.getAllNodes()
+            if (moduleId) nodes = nodes.filter(n => n.moduleId === moduleId)
+            const items = nodes.slice(0, limit)
+            const header = 'id,name,kind,qualifiedName,filePath,language,startLine,endLine,visibility'
+            const rows = items.map(n => `${n.id},"${n.name}","${n.kind}","${n.qualifiedName}","${n.filePath}","${n.language}",${n.startLine},${n.endLine},"${n.visibility}"`)
+            return { format, scope, data: [header, ...rows].join('\n'), total: items.length, truncated: nodes.length > limit }
+          }
+          if (scope === 'edges' || scope === 'all') {
+            let edges = qm.getAllEdges()
+            const items = edges.slice(0, limit)
+            const header = 'source,target,kind,line,col'
+            const rows = items.map(e => `"${e.sourceId}","${e.targetId}","${e.kind}",${e.line ?? 0},${e.col ?? 0}`)
+            return { format, scope, data: [header, ...rows].join('\n'), total: items.length, truncated: edges.length > limit }
+          }
+        }
+
+        if (format === 'dot') {
+          const lines = ['digraph CodeGraph {', '  rankdir=LR;', '  node [shape=box, style=rounded];']
+          let nodes = qm.getAllNodes()
+          if (moduleId) nodes = nodes.filter(n => n.moduleId === moduleId)
+          const nodeSlice = nodes.slice(0, limit)
+          for (const n of nodeSlice) {
+            const id = n.id.replace(/[^a-zA-Z0-9_]/g, '_')
+            lines.push(`  "${id}" [label="${n.name}\\n${n.kind}"];`)
+          }
+          let edges = qm.getAllEdges()
+          if (moduleId) edges = edges.filter(e => nodeSlice.some(n => n.id === e.sourceId))
+          for (const e of edges.slice(0, limit * 2)) {
+            const src = e.sourceId.replace(/[^a-zA-Z0-9_]/g, '_')
+            const tgt = e.targetId.replace(/[^a-zA-Z0-9_]/g, '_')
+            lines.push(`  "${src}" -> "${tgt}" [label="${e.kind}"];`)
+          }
+          lines.push('}')
+          return { format, scope, data: lines.join('\n'), totalNodes: nodeSlice.length, totalEdges: edges.length }
+        }
+
+        const result: Record<string, unknown> = {}
+        if (scope === 'nodes' || scope === 'all') {
+          let nodes = qm.getAllNodes()
+          if (moduleId) nodes = nodes.filter(n => n.moduleId === moduleId)
+          result.nodes = nodes.slice(0, limit).map(n => ({
+            id: n.id, name: n.name, kind: n.kind, qualifiedName: n.qualifiedName,
+            filePath: n.filePath, language: n.language, startLine: n.startLine,
+            endLine: n.endLine, signature: n.signature, visibility: n.visibility,
+          }))
+          result.nodesTotal = nodes.length
+          result.nodesTruncated = nodes.length > limit
+        }
+        if (scope === 'edges' || scope === 'all') {
+          let edges = qm.getAllEdges()
+          result.edges = edges.slice(0, limit).map(e => ({
+            source: e.sourceId, target: e.targetId, kind: e.kind,
+            line: e.line, col: e.col, metadata: e.metadata,
+          }))
+          result.edgesTotal = edges.length
+          result.edgesTruncated = edges.length > limit
+        }
+        if (scope === 'files' || scope === 'all') {
+          let files = qm.getAllFiles()
+          result.files = files.slice(0, limit).map(f => ({
+            path: f.path, language: f.language, size: f.size, nodeCount: f.nodeCount,
+          }))
+          result.filesTotal = files.length
+          result.filesTruncated = files.length > limit
+        }
+        return result
+      },
+    },
+    {
+      name: 'mini_cg_available_tools',
+      description: 'List all available mini_cg_* tools with descriptions and input schemas. Use this to discover what the system can do.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          filter: { type: 'string', description: 'Filter by category: "search", "navigation", "global", "architecture", "enterprise" (optional)' },
+        },
+      },
+      handler: async (args, _graph) => {
+        const filter = typeof args.filter === 'string' ? args.filter.toLowerCase() : ''
+        const { createTools } = await import('../tools.js')
+        const allTools = createTools()
+        const categoryMap: Record<string, string[]> = {
+          search: ['mini_cg_search', 'mini_cg_context', 'mini_cg_explore', 'mini_cg_semantic_search'],
+          navigation: ['mini_cg_callers', 'mini_cg_callees', 'mini_cg_impact', 'mini_cg_backtrace', 'mini_cg_node', 'mini_cg_trace'],
+          global: ['mini_cg_workspace_status', 'mini_cg_summary', 'mini_cg_metrics', 'mini_cg_module'],
+          architecture: ['mini_cg_mermaid', 'mini_cg_architecture', 'mini_cg_dispatch', 'mini_cg_search_files', 'mini_cg_related_tests', 'mini_cg_recent_changes', 'mini_cg_unresolved_refs', 'mini_cg_export', 'mini_cg_available_tools'],
+          enterprise: ['mini_cg_processes', 'mini_cg_rules', 'mini_cg_feign', 'mini_cg_mybatis', 'mini_cg_page_trace', 'mini_cg_service_trace'],
+        }
+        let matched = allTools
+        if (filter) {
+          const filterNames = categoryMap[filter] ?? []
+          matched = allTools.filter(t => filterNames.includes(t.name))
+        }
+        return {
+          toolCount: matched.length,
+          totalTools: allTools.length,
+          tools: matched.map(t => ({
+            name: t.name,
+            description: t.description,
+            parameters: Object.keys(t.inputSchema.properties ?? {}),
+          })),
+        }
+      },
+    },
   ]
 }

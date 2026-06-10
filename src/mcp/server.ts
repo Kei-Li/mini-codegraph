@@ -1,4 +1,4 @@
-import type { Transport } from './types.js'
+import type { Transport } from './transport/types.js'
 import type { GraphQueryManager } from '../graph/queries.js'
 import { createTools, type ToolDefinition } from './tools.js'
 import { logError } from '../logger.js'

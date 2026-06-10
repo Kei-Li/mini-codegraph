@@ -1,32 +1,28 @@
 import type { QueryManager } from '../../db/queries.js'
 import { shouldRunExtractor, sourceHasKeywords, sourceIncludesAny } from './extractor-guards.js'
 import { indexJpaEntities } from '../data/jpa-extractor.js'
-import { indexSecurity } from '../frameworks/security-extractor.js'
-import { indexBatchJobs } from '../frameworks/batch-extractor.js'
-import { indexResilience } from '../frameworks/resilience-extractor.js'
 import { indexLombokAnnotations } from '../data/lombok-extractor.js'
 import { indexMapStructMappers } from '../data/mapstruct-extractor.js'
 import { indexGraphQLEndpoints } from '../middleware/graphql-extractor.js'
 import { indexWebSocketEndpoints } from '../middleware/websocket-extractor.js'
 import { indexTestAnnotations } from '../infra/test-extractor.js'
-import { indexAsyncAnnotations } from '../frameworks/async-extractor.js'
-import { indexAopAnnotations } from '../frameworks/aop-extractor.js'
-import { indexSecurityFilterChains } from '../frameworks/security-filter-extractor.js'
-import { indexControllerAdvice } from '../frameworks/controller-advice-extractor.js'
-import { indexInterceptors } from '../frameworks/interceptor-extractor.js'
 import { indexJpaCustomQueries } from '../data/jpa-query-extractor.js'
-import { indexProfileAnnotations } from '../frameworks/profile-extractor.js'
 import { indexRedisAnnotations } from '../data/redis-extractor.js'
-import { indexObservationAnnotations } from '../frameworks/observability-extractor.js'
-import { indexHttpExchanges } from '../frameworks/http-exchange-extractor.js'
-import { indexSpringIntegration } from '../frameworks/spring-integration-extractor.js'
-import { indexSpringLdap } from '../frameworks/spring-ldap-extractor.js'
-import { indexSpringSession } from '../frameworks/spring-session-extractor.js'
 import { indexR2dbcEntities } from '../data/r2dbc-extractor.js'
 import { indexJooqUsage } from '../data/jooq-extractor.js'
-import { indexStreamFunctions } from '../frameworks/stream-function-extractor.js'
 import { indexMongoEntities } from '../data/mongo-extractor.js'
 import { indexSQLStatements } from '../data/sql-extractor.js'
+import {
+  indexSecurity, indexResilience, indexAsyncAnnotations,
+  indexAopAnnotations, indexSecurityFilterChains, indexControllerAdvice,
+  indexInterceptors, indexProfileAnnotations, indexHttpExchanges,
+} from '../frameworks/spring-web-extractor.js'
+import {
+  indexObservationAnnotations, indexSpringIntegration, indexStreamFunctions,
+} from '../frameworks/spring-cloud-extractor.js'
+import {
+  indexBatchJobs, indexSpringLdap, indexSpringSession,
+} from '../frameworks/spring-misc-extractor.js'
 
 export function runInlineExtractors(
   queries: QueryManager,

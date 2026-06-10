@@ -77,11 +77,8 @@ describe('MCP tools', () => {
       expect(names).toContain('mini_cg_page_trace')
       expect(names).toContain('mini_cg_service_trace')
       expect(names).toContain('mini_cg_workspace_status')
-      expect(names).toContain('mini_cg_explore')
-      expect(names).toContain('mini_cg_dispatch')
       expect(names).toContain('mini_cg_semantic_search')
       expect(names).toContain('mini_cg_history')
-      expect(names).toContain('mini_cg_lint')
     })
 
     it('every tool has name, description, inputSchema, and handler', () => {

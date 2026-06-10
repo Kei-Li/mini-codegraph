@@ -38,7 +38,7 @@ export class ExtractionOrchestrator {
     this.db = db
     this.queries = queries
     this.grammarLoader = new GrammarLoader()
-    this.workerPool.start(Math.max(1, cpus().length - 1))
+    this.workerPool.start(Math.min(4, Math.max(1, cpus().length - 1)))
   }
 
   async init(): Promise<void> {
@@ -121,7 +121,7 @@ export class ExtractionOrchestrator {
           const contentHash = msg.contentHash ?? ''
           const fileStat = msg.stat
 
-          // Write nodes to batch mode
+          // Write nodes to batch mode (old tables)
           for (const ni of result.nodes) {
             this.queries.insertNode({
               id: `${relPath}:${ni.name}:${ni.startLine}`,
@@ -146,8 +146,28 @@ export class ExtractionOrchestrator {
             moduleId: mid,
           })
 
-          // On-demand source read for annotation/inline extractors
-          const source = readFileSync(absPath, 'utf-8')
+          // Dual-write to new graph tables (0.3.0 schema)
+          for (const ni of result.nodes) {
+            this.queries.insertGraphNode({
+              id: `${relPath}:${ni.name}:${ni.startLine}`,
+              kind: ni.kind, name: ni.name,
+              qualifiedName: ni.qualifiedName,
+              filePath: relPath, language: lang.name,
+              startLine: ni.startLine, endLine: ni.endLine,
+              startColumn: 0, endColumn: 0,
+              docstring: '', signature: '',
+              visibility: 'public',
+              isExported: false,
+              parentId: ni.parentId, moduleId: mid,
+            })
+          }
+          for (const ei of result.edges) {
+            this.queries.insertGraphEdge(ei.source, ei.target, ei.kind, ei.metadata ?? '{}', ei.line, ei.col)
+          }
+          this.queries.upsertNodeLocation(relPath, lang.name, contentHash, fileStat.size, fileStat.mtimeMs, Date.now(), mid)
+
+          // Use source from worker to avoid redundant readFileSync
+          const source = msg.source ?? readFileSync(absPath, 'utf-8')
           if (source.includes('@')) {
             extractFileAnnotations(this.queries, source, relPath, mid, result.nodes.map(ni => ({
               id: `${relPath}:${ni.name}:${ni.startLine}`,
@@ -163,7 +183,7 @@ export class ExtractionOrchestrator {
 
           writeQueue.push({ nodes: result.nodes.length, edges: result.edges.length })
         } catch (e) {
-          errors.push(`${relPath}: ${e}`)
+          if (errors.length < 1000) errors.push(`${relPath}: ${e}`)
         }
       }
 
@@ -288,14 +308,18 @@ export class ExtractionOrchestrator {
     const allModuleIds = modules.map(m => m.id)
     let totalNodes = 0, totalEdges = 0
 
-    // Index each module sequentially — all modules share the same DatabaseConnection,
-    // so parallel indexing would cause "database is locked" errors and transaction conflicts.
-    // Sequential indexing ensures each module's transaction cycle completes before the next starts.
-    for (const mod of modules) {
+    // Index each module sequentially with worker pool reset between modules.
+    // This prevents tree-sitter WASM memory accumulation across 100+ modules.
+    for (let i = 0; i < modules.length; i++) {
+      const mod = modules[i]
       const r = await this.indexProject(mod.rootPath, mod.id, excludePatterns, true, fastMode)
       totalNodes += r.nodes.length
       totalEdges += r.edges.length
       errors.push(...r.errors)
+      // Reset workers every 20 modules to clear WASM heap
+      if (i > 0 && i % 20 === 0) {
+        this.resetWorkers()
+      }
     }
 
     // Multi-module post-processing runs after all modules are indexed
@@ -658,9 +682,23 @@ export class ExtractionOrchestrator {
                 isExported: ni.isExported ?? false,
                 parentId: ni.parentId, moduleId,
               })
+              // Dual-write to graph_nodes
+              this.queries.insertGraphNode({
+                id: `${relPath}:${ni.name}:${ni.startLine}`,
+                kind: ni.kind, name: ni.name,
+                qualifiedName: ni.qualifiedName,
+                filePath: relPath, language: lang.name,
+                startLine: ni.startLine, endLine: ni.endLine,
+                startColumn: 0, endColumn: 0,
+                docstring: '', signature: '',
+                visibility: 'public',
+                isExported: false,
+                parentId: ni.parentId, moduleId,
+              })
             }
             for (const ei of result.edges) {
               this.queries.insertEdge(ei.source, ei.target, ei.kind, ei.metadata ?? '{}', ei.line, ei.col)
+              this.queries.insertGraphEdge(ei.source, ei.target, ei.kind, ei.metadata ?? '{}', ei.line, ei.col)
             }
             this.queries.upsertFile({
               path: relPath, contentHash, language: lang.name,
@@ -668,11 +706,11 @@ export class ExtractionOrchestrator {
               indexedAt: Date.now(), nodeCount: result.nodes.length,
               moduleId,
             })
+            this.queries.upsertNodeLocation(relPath, lang.name, contentHash, fileStat.size, fileStat.mtimeMs, Date.now(), moduleId)
           }
 
           if (storeToDb) {
-            let src = ''
-            try { src = readFileSync(absPath, 'utf-8') } catch { /* best-effort */ }
+            const src = msg.source ?? (() => { try { return readFileSync(absPath, 'utf-8') } catch { return '' } })()
             if (src.includes('@')) {
               extractFileAnnotations(this.queries, src, relPath, moduleId, result.nodes.map(ni => ({
                 id: `${relPath}:${ni.name}:${ni.startLine}`,
@@ -709,6 +747,12 @@ export class ExtractionOrchestrator {
         language: lang.name,
       })
     })
+  }
+
+  resetWorkers(): void {
+    this.workerPool.stop()
+    this.workerPool = new WorkerPool()
+    this.workerPool.start(Math.min(4, Math.max(1, cpus().length - 1)))
   }
 
   stopWorkers(): void {

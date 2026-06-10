@@ -1,8 +1,8 @@
 import type { DatabaseConnection } from '../../db/connection.js'
 import type { QueryManager } from '../../db/queries.js'
 
-const FLUSH_INTERVAL_MS = 1000
-const FLUSH_BATCH_SIZE = 5000
+const FLUSH_INTERVAL_MS = 5000
+const MAX_PENDING_NODES = 50_000
 
 export interface PendingWrite {
   nodes: number
@@ -32,20 +32,19 @@ export class WriteQueue {
     this.fileCount++
     this.nodeCount += write.nodes
     this.edgeCount += write.edges
-    if (this.fileCount % FLUSH_BATCH_SIZE === 0) {
+    if (this.nodeCount >= MAX_PENDING_NODES) {
       this.tryFlush()
     }
   }
 
   private tryFlush(): void {
-    // Guard against re-entrant calls (e.g. timer firing during a flush)
     if (this.flushing) return
     this.flushing = true
     try {
-      // Only flush if we're actually in a transaction
       if (!this.db.inTransaction) return
 
       this.queries.flushBatch()
+      this.nodeCount = 0
       this.db.commitTransaction()
       this.flushCount++
       if (this.flushCount % 10 === 0) {
@@ -53,12 +52,6 @@ export class WriteQueue {
       }
       this.db.beginTransaction()
     } catch (e) {
-      // Reset _inTransaction so the next tryFlush starts fresh.
-      // exec() already handles SQLITE_BUSY_SNAPSHOT (517) internally
-      // by rolling back and starting a new transaction; this catch
-      // ensures _inTransaction flag is consistent regardless of what
-      // happened inside exec/flushBatch.  We must then begin a new
-      // transaction so future timer ticks can continue flushing.
       try { this.db.rollbackTransaction() } catch { /* best-effort */ }
       try { this.db.beginTransaction() } catch { /* best-effort */ }
       throw e
@@ -68,7 +61,6 @@ export class WriteQueue {
   }
 
   flushSync(): void {
-    // Clear timer first to prevent concurrent flush
     if (this.flushTimer) {
       clearInterval(this.flushTimer)
       this.flushTimer = null
@@ -76,6 +68,7 @@ export class WriteQueue {
     this.flushing = true
     try {
       this.queries.flushBatch()
+      this.nodeCount = 0
       if (this.db.inTransaction) {
         this.db.commitTransaction()
       }
@@ -98,7 +91,7 @@ export class WriteQueue {
   }
 
   get pressure(): number {
-    return Math.min(1, this.fileCount % FLUSH_BATCH_SIZE / FLUSH_BATCH_SIZE)
+    return Math.min(1, this.nodeCount / MAX_PENDING_NODES)
   }
 
   stop(): void {

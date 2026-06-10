@@ -34,7 +34,7 @@ export class MiniCodeGraph {
   private static instances = new Set<MiniCodeGraph>()
   private lock: FileLock
 
-  constructor(projectRoot: string, dbPath?: string) {
+  constructor(projectRoot: string, dbPath?: string, readonly = false) {
     this.projectRoot = projectRoot
     this.dataDir = join(projectRoot, '.mini-codegraph')
     const resolvedDbPath = dbPath ?? join(this.dataDir, 'mini-codegraph.db')
@@ -43,7 +43,7 @@ export class MiniCodeGraph {
       mkdirSync(this.dataDir, { recursive: true })
     }
     this.lock = new FileLock(join(this.dataDir, 'mini-codegraph.lock'))
-    this.lock.acquire()
+    if (!readonly) this.lock.acquire()
 
     try {
       this.db = new DatabaseConnection(resolvedDbPath)
@@ -56,7 +56,7 @@ export class MiniCodeGraph {
       MiniCodeGraph.instances.add(this)
       MiniCodeGraph.registerSignalHandlers()
     } catch (e) {
-      this.lock.release()
+      if (!readonly) this.lock.release()
       throw e
     }
   }
@@ -164,10 +164,10 @@ export class MiniCodeGraph {
     return { cg, modules }
   }
 
-  static open(projectRoot: string): MiniCodeGraph | null {
+  static open(projectRoot: string, readonly = false): MiniCodeGraph | null {
     const dbPath = join(projectRoot, '.mini-codegraph', 'mini-codegraph.db')
     if (!existsSync(dbPath)) return null
-    return new MiniCodeGraph(projectRoot, dbPath)
+    return new MiniCodeGraph(projectRoot, dbPath, readonly)
   }
 
   static findProjectRoot(startPath: string): string | null {

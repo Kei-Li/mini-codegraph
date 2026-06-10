@@ -177,6 +177,7 @@ export class QueryManager {
     try {
       const stmt = this.db.prepare(Q.SEARCH_NODES)
       const rows = stmt.all(safe, limit) as SqliteRow[]
+      if (rows.length === 0) return this.fallbackSearch(safe, limit).map(r => r.node)
       return rows.map(mapRowToNode)
     } catch {
       return this.fallbackSearch(safe, limit).map(r => r.node)
@@ -189,6 +190,7 @@ export class QueryManager {
     try {
       const stmt = this.db.prepare(Q.SEARCH_NODES)
       const rows = stmt.all(safe, limit) as SqliteRow[]
+      if (rows.length === 0) return this.fallbackSearch(safe, limit)
       return rows.map(r => ({ node: mapRowToNode(r), rank: r.rank as number }))
     } catch {
       return this.fallbackSearch(safe, limit)
@@ -401,8 +403,23 @@ export class QueryManager {
   }
 
   resolveCallEdges(): number {
-    const info = this.db.prepare(Q.RESOLVE_CALL_EDGES).run()
-    return Number(info.changes)
+    let total = 0
+    for (const stmt of Q.RESOLVE_CALL_EDGES.split(';').filter(s => s.trim())) {
+      try {
+        const info = this.db.prepare(stmt.trim()).run()
+        total += Number(info.changes)
+      } catch (e) {
+        // continue if one statement fails
+      }
+    }
+    if (total > 0) {
+      try {
+        this.db.prepare(Q.SYNC_GRAPH_EDGES).run()
+      } catch (e) {
+        // sync is best-effort
+      }
+    }
+    return total
   }
 
   insertUnresolvedRef(ref: UnresolvedReference): void {
@@ -681,6 +698,37 @@ export class QueryManager {
 
   insertCicdPipeline(id: string, pipelineType: string, triggerBranches: string, vmImage: string, stages: string, filePath: string, moduleId: string): void {
     this.db.prepare(Q.INSERT_CICD_PIPELINE).run(id, pipelineType, triggerBranches, vmImage, stages, filePath, moduleId)
+  }
+
+  // === 0.3.0 graph table methods ===
+
+  insertGraphNode(node: MiniCodeGraphNode): void {
+    const stmt = this.db.prepare(Q.INSERT_GRAPH_NODE)
+    stmt.run(
+      node.id, node.kind, node.name, node.qualifiedName,
+      node.filePath, node.language, node.startLine, node.endLine,
+      node.metadata ?? '{}', node.moduleId ?? ''
+    )
+  }
+
+  insertGraphEdge(source: string, target: string, kind: string, metadata = '{}', line = 0, col = 0): void {
+    const stmt = this.db.prepare(Q.INSERT_GRAPH_EDGE)
+    stmt.run(source, target, kind, metadata, line, col)
+  }
+
+  upsertNodeLocation(filePath: string, language: string, contentHash: string, size: number, modifiedAt: number, indexedAt: number, moduleId: string): void {
+    const stmt = this.db.prepare(Q.UPSERT_NODE_LOCATION)
+    stmt.run(filePath, language, contentHash, size, modifiedAt, indexedAt, moduleId)
+  }
+
+  upsertNodeDoc(nodeId: string, docstring: string, signature: string): void {
+    const stmt = this.db.prepare(Q.UPSERT_NODE_DOC)
+    stmt.run(nodeId, docstring, signature)
+  }
+
+  insertDispatchCandidate(id: string, source: string, target: string, dispatchType: string, confidence: number, metadata: string, filePath: string, moduleId: string, interfaceName = '', implName = ''): void {
+    const stmt = this.db.prepare(Q.INSERT_DISPATCH_CANDIDATE)
+    stmt.run(id, source, target, interfaceName, implName, dispatchType, confidence, metadata, filePath, moduleId)
   }
 
   // === Entry points ===

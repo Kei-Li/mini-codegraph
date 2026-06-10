@@ -1,7 +1,11 @@
 import { createConnection, type Socket } from 'node:net'
 import { readFileSync, existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 import { spawn } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
 
 export interface DaemonInfo {
   port: number
@@ -123,9 +127,9 @@ export function connectToDaemonWithVersionCheck(port: number): Promise<{ socket:
 
 function findCliPath(): string | null {
   const candidates = [
-    join(process.cwd(), 'dist', 'cli.js'),
-    join(__dirname, '..', '..', 'dist', 'cli.js'),
-    join(__dirname, '..', '..', '..', 'dist', 'cli.js'),
+    join(process.cwd(), 'dist', 'cli', 'index.js'),
+    join(__dirname, '..', '..', 'dist', 'cli', 'index.js'),
+    join(__dirname, '..', '..', '..', 'dist', 'cli', 'index.js'),
   ]
   for (const p of candidates) {
     if (existsSync(p)) return p

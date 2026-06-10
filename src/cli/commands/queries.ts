@@ -4,7 +4,7 @@ import { logInfo, logError } from '../../logger.js'
 
 export async function handleSearch(query: string, path: string, options: any): Promise<void> {
   const resolvedPath = resolve(path)
-  const cg = MiniCodeGraph.open(resolvedPath)
+  const cg = MiniCodeGraph.open(resolvedPath, true)
   if (!cg) {
     logError('No index found. Run init + index first.')
     process.exit(1)
@@ -18,7 +18,7 @@ export async function handleSearch(query: string, path: string, options: any): P
 
 export function handleStatus(path: string): void {
   const resolvedPath = resolve(path)
-  const cg = MiniCodeGraph.open(resolvedPath)
+  const cg = MiniCodeGraph.open(resolvedPath, true)
   if (!cg) {
     logError('No index found.')
     process.exit(1)
@@ -39,7 +39,7 @@ export function handleStatus(path: string): void {
 
 export async function handleContext(task: string, path: string, options: any): Promise<void> {
   const resolvedPath = resolve(path)
-  const cg = MiniCodeGraph.open(resolvedPath)
+  const cg = MiniCodeGraph.open(resolvedPath, true)
   if (!cg) {
     logError('No index found.')
     process.exit(1)
@@ -65,7 +65,7 @@ export async function handleContext(task: string, path: string, options: any): P
 
 export function handleCallers(symbol: string, path: string): void {
   const resolvedPath = resolve(path)
-  const cg = MiniCodeGraph.open(resolvedPath)
+  const cg = MiniCodeGraph.open(resolvedPath, true)
   if (!cg) {
     logError('No index found.')
     process.exit(1)
@@ -73,20 +73,21 @@ export function handleCallers(symbol: string, path: string): void {
 
   const graph = cg.getGraph()
   const results = graph.search(symbol, 5)
-  if (results.length === 0) {
-    logInfo(JSON.stringify({ callers: [] }))
-    cg.close()
-    return
+  for (const r of results) {
+    const callers = graph.getCallers(r.node.id)
+    if (callers.length > 0) {
+      logInfo(JSON.stringify({ node: r.node, callers }))
+      cg.close()
+      return
+    }
   }
-
-  const callers = graph.getCallers(results[0].node.id)
-  logInfo(JSON.stringify({ callers }))
+  logInfo(JSON.stringify({ callers: [] }))
   cg.close()
 }
 
 export function handleCallees(symbol: string, path: string): void {
   const resolvedPath = resolve(path)
-  const cg = MiniCodeGraph.open(resolvedPath)
+  const cg = MiniCodeGraph.open(resolvedPath, true)
   if (!cg) {
     logError('No index found.')
     process.exit(1)
@@ -94,20 +95,21 @@ export function handleCallees(symbol: string, path: string): void {
 
   const graph = cg.getGraph()
   const results = graph.search(symbol, 5)
-  if (results.length === 0) {
-    logInfo(JSON.stringify({ callees: [] }))
-    cg.close()
-    return
+  for (const r of results) {
+    const callees = graph.getCallees(r.node.id)
+    if (callees.length > 0) {
+      logInfo(JSON.stringify({ node: r.node, callees }))
+      cg.close()
+      return
+    }
   }
-
-  const callees = graph.getCallees(results[0].node.id)
-  logInfo(JSON.stringify({ callees }))
+  logInfo(JSON.stringify({ callees: [] }))
   cg.close()
 }
 
 export function handleImpact(symbol: string, path: string, options: any): void {
   const resolvedPath = resolve(path)
-  const cg = MiniCodeGraph.open(resolvedPath)
+  const cg = MiniCodeGraph.open(resolvedPath, true)
   if (!cg) {
     logError('No index found.')
     process.exit(1)
@@ -134,7 +136,7 @@ export function handleImpact(symbol: string, path: string, options: any): void {
 
 export function handleFiles(path: string, options: any): void {
   const resolvedPath = resolve(path)
-  const cg = MiniCodeGraph.open(resolvedPath)
+  const cg = MiniCodeGraph.open(resolvedPath, true)
   if (!cg) {
     logError('No index found.')
     process.exit(1)
@@ -147,7 +149,7 @@ export function handleFiles(path: string, options: any): void {
 
 export function handleRoutes(path: string, options: { manifest?: boolean }): void {
   const resolvedPath = resolve(path)
-  const cg = MiniCodeGraph.open(resolvedPath)
+  const cg = MiniCodeGraph.open(resolvedPath, true)
   if (!cg) {
     logError('No index found.')
     process.exit(1)
@@ -165,7 +167,7 @@ export function handleRoutes(path: string, options: { manifest?: boolean }): voi
 
 export function handleAffected(path: string, files: string[]): void {
   const resolvedPath = resolve(path)
-  const cg = MiniCodeGraph.open(resolvedPath)
+  const cg = MiniCodeGraph.open(resolvedPath, true)
   if (!cg) {
     logError('No index found.')
     process.exit(1)
@@ -179,7 +181,7 @@ export function handleAffected(path: string, files: string[]): void {
 
 export function handleExplore(symbols: string, path: string): void {
   const resolvedPath = resolve(path)
-  const cg = MiniCodeGraph.open(resolvedPath)
+  const cg = MiniCodeGraph.open(resolvedPath, true)
   if (!cg) {
     logError('No index found.')
     process.exit(1)
@@ -218,7 +220,7 @@ export function handleExplore(symbols: string, path: string): void {
 
 export function handleDeadCode(path: string): void {
   const resolvedPath = resolve(path)
-  const cg = MiniCodeGraph.open(resolvedPath)
+  const cg = MiniCodeGraph.open(resolvedPath, true)
   if (!cg) {
     logError('No index found.')
     process.exit(1)

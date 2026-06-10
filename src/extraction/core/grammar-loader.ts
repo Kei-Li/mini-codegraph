@@ -118,22 +118,34 @@ export class GrammarLoader {
       throw new Error(`Cannot find grammars directory to save ${filename}`)
     }
 
-    const url = `${GRAMMAR_CDN}/${language}-wasm@latest/${filename}`
-    logError(`Downloading grammar: ${url}`)
+    const urls = [
+      `${GRAMMAR_CDN}/${language}-wasm@latest/${filename}`,
+      `https://github.com/tree-sitter/tree-sitter-${language}/releases/latest/download/${filename}`,
+      `https://cdn.jsdelivr.net/npm/tree-sitter-wasms@latest/out/${filename}`,
+      `https://github.com/tree-sitter/tree-sitter-${language}/releases/download/v0.23.6/${filename}`,
+    ]
 
-    try {
-      const response = await fetch(url)
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      const buffer = await response.arrayBuffer()
-      const targetPath = join(grammarsDir, filename)
-      if (!existsSync(grammarsDir)) {
-        mkdirSync(grammarsDir, { recursive: true })
+    let lastError: Error | null = null
+    for (const url of urls) {
+      logError(`Downloading grammar: ${url}`)
+      try {
+        const response = await fetch(url)
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        const buffer = await response.arrayBuffer()
+        const targetPath = join(grammarsDir, filename)
+        if (!existsSync(grammarsDir)) {
+          mkdirSync(grammarsDir, { recursive: true })
+        }
+        writeFileSync(targetPath, Buffer.from(buffer))
+        logError(`Downloaded grammar to ${targetPath}`)
+        return
+      } catch (e) {
+        lastError = e instanceof Error ? e : new Error(String(e))
+        logError(`  fallback: ${url} failed (${lastError.message})`)
       }
-      writeFileSync(targetPath, Buffer.from(buffer))
-      logError(`Downloaded grammar to ${targetPath}`)
-    } catch (e) {
-      throw new Error(`Failed to download grammar for "${language}" from ${url}: ${e}`)
     }
+
+    throw new Error(`Failed to download grammar for "${language}" from all sources: ${lastError?.message}`)
   }
 }
 

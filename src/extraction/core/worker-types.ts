@@ -1,4 +1,4 @@
-import type { NodeInfo, EdgeInfo } from '../languages/java.js'
+import type { NodeInfo, EdgeInfo } from '../languages/types.js'
 
 export interface WorkerParseRequest {
   type: 'parse'
@@ -39,6 +39,7 @@ export interface WorkerParseResponse {
   result?: WorkerParseResult
   contentHash?: string
   stat?: WorkerFileStat
+  source?: string        // source text to avoid re-read on main thread
   error?: string
   fatal?: boolean
 }
@@ -52,4 +53,9 @@ export interface WorkerHeartbeatResponse {
   type: 'heartbeat'
 }
 
-export type WorkerResponse = WorkerParseResponse | WorkerInitResponse | WorkerHeartbeatResponse
+export interface WorkerErrorResponse {
+  type: 'worker-error'
+  error: string
+}
+
+export type WorkerResponse = WorkerParseResponse | WorkerInitResponse | WorkerHeartbeatResponse | WorkerErrorResponse

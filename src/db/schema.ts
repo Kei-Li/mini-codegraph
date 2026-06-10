@@ -340,6 +340,103 @@ CREATE TABLE IF NOT EXISTS cicd_pipelines (
   created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_cicd_pipelines_module ON cicd_pipelines(module_id);
+
+/* === 0.3.0 schema: graph_nodes (cross-file graph only, no source derivatives) === */
+CREATE TABLE IF NOT EXISTS graph_nodes (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  name TEXT NOT NULL,
+  qualified_name TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  language TEXT NOT NULL,
+  start_line INTEGER NOT NULL,
+  end_line INTEGER NOT NULL,
+  metadata TEXT DEFAULT '{}',
+  module_id TEXT DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_graph_nodes_file ON graph_nodes(file_path);
+CREATE INDEX IF NOT EXISTS idx_graph_nodes_kind ON graph_nodes(kind);
+CREATE INDEX IF NOT EXISTS idx_graph_nodes_name ON graph_nodes(name);
+CREATE INDEX IF NOT EXISTS idx_graph_nodes_qname ON graph_nodes(qualified_name);
+CREATE INDEX IF NOT EXISTS idx_graph_nodes_module ON graph_nodes(module_id);
+
+CREATE TABLE IF NOT EXISTS graph_edges (
+  source TEXT NOT NULL,
+  target TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  metadata TEXT DEFAULT '{}',
+  line INTEGER DEFAULT 0,
+  col INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now')),
+  PRIMARY KEY (source, target, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_graph_edges_source ON graph_edges(source);
+CREATE INDEX IF NOT EXISTS idx_graph_edges_target ON graph_edges(target);
+CREATE INDEX IF NOT EXISTS idx_graph_edges_kind ON graph_edges(kind);
+
+CREATE TABLE IF NOT EXISTS node_locations (
+  file_path TEXT NOT NULL,
+  language TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  size INTEGER NOT NULL DEFAULT 0,
+  modified_at INTEGER NOT NULL DEFAULT 0,
+  indexed_at INTEGER NOT NULL DEFAULT 0,
+  module_id TEXT DEFAULT '',
+  PRIMARY KEY (file_path, module_id)
+);
+CREATE INDEX IF NOT EXISTS idx_node_locations_module ON node_locations(module_id);
+
+CREATE TABLE IF NOT EXISTS node_docs (
+  node_id TEXT NOT NULL,
+  docstring TEXT DEFAULT '',
+  signature TEXT DEFAULT '',
+  PRIMARY KEY (node_id)
+);
+
+CREATE TABLE IF NOT EXISTS dispatch_candidates (
+  id TEXT PRIMARY KEY,
+  source TEXT NOT NULL,
+  target TEXT NOT NULL,
+  interface_name TEXT DEFAULT '',
+  impl_name TEXT DEFAULT '',
+  dispatch_type TEXT NOT NULL DEFAULT 'direct',
+  confidence REAL NOT NULL DEFAULT 0.0,
+  metadata TEXT DEFAULT '{}',
+  file_path TEXT DEFAULT '',
+  module_id TEXT DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_dispatch_candidates_source ON dispatch_candidates(source);
+CREATE INDEX IF NOT EXISTS idx_dispatch_candidates_target ON dispatch_candidates(target);
+CREATE INDEX IF NOT EXISTS idx_dispatch_candidates_module ON dispatch_candidates(module_id);
+`
+
+/* === 0.3.0 graph tables === */
+export const INSERT_GRAPH_NODE = `
+  INSERT OR REPLACE INTO graph_nodes
+    (id, kind, name, qualified_name, file_path, language,
+     start_line, end_line, metadata, module_id)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`
+export const INSERT_GRAPH_EDGE = `
+  INSERT OR IGNORE INTO graph_edges (source, target, kind, metadata, line, col)
+  VALUES (?, ?, ?, ?, ?, ?)
+`
+export const UPSERT_NODE_LOCATION = `
+  INSERT OR REPLACE INTO node_locations
+    (file_path, language, content_hash, size, modified_at, indexed_at, module_id)
+  VALUES (?, ?, ?, ?, ?, ?, ?)
+`
+export const UPSERT_NODE_DOC = `
+  INSERT OR REPLACE INTO node_docs (node_id, docstring, signature)
+  VALUES (?, ?, ?)
+`
+export const INSERT_DISPATCH_CANDIDATE = `
+  INSERT OR IGNORE INTO dispatch_candidates
+    (id, source, target, interface_name, impl_name, dispatch_type,
+     confidence, metadata, file_path, module_id)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 export const DELETE_FILE_NODES = `DELETE FROM nodes WHERE file_path = ?`
@@ -426,6 +523,13 @@ export const GET_METADATA = `SELECT value FROM project_metadata WHERE key = ?`
 export const SET_METADATA = `INSERT OR REPLACE INTO project_metadata (key, value) VALUES (?, ?)`
 export const RESOLVE_CALL_EDGES = `
   UPDATE edges SET target = (
+    SELECT id FROM nodes WHERE name = edges.target AND kind IN ('function','method','constructor') LIMIT 1
+  )
+  WHERE kind = 'calls'
+    AND target NOT LIKE '%:%'
+    AND EXISTS (SELECT 1 FROM nodes WHERE name = edges.target AND kind IN ('function','method','constructor'));
+
+  UPDATE edges SET target = (
     SELECT id FROM nodes WHERE id LIKE '%' || edges.target || ':%' LIMIT 1
   )
   WHERE kind = 'calls'
@@ -433,6 +537,26 @@ export const RESOLVE_CALL_EDGES = `
     AND target LIKE '%:%'
     AND target NOT LIKE '%:%:%'
     AND EXISTS (SELECT 1 FROM nodes WHERE id LIKE '%' || edges.target || ':%')
+`
+
+export const SYNC_GRAPH_EDGES = `
+  UPDATE graph_edges SET target = (
+    SELECT target FROM edges
+    WHERE edges.source = graph_edges.source
+      AND edges.kind = graph_edges.kind
+      AND edges.target LIKE graph_edges.target || ':%'
+      AND edges.target LIKE '%:%:%'
+    LIMIT 1
+  )
+  WHERE kind = 'calls'
+    AND target NOT LIKE '%:%:%'
+    AND EXISTS (
+      SELECT 1 FROM edges
+      WHERE edges.source = graph_edges.source
+        AND edges.kind = graph_edges.kind
+        AND edges.target LIKE graph_edges.target || ':%'
+        AND edges.target LIKE '%:%:%'
+    )
 `
 
 export const INSERT_UNRESOLVED_REF = `

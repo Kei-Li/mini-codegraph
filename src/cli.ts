@@ -438,4 +438,4 @@ program
   .argument('[pattern]', 'Glob pattern to exclude (e.g. "generated-sources/**" or "**/*.gen.*")')
   .action(handleExclude)
 
-program.parse(process.argv)
+// (parse is called by index.ts — do not add parse() here)

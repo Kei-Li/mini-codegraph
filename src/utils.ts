@@ -252,37 +252,10 @@ export function getGitVisibleFiles(rootDir: string, excludePatterns?: string[]):
 }
 
 export function scanDirectory(rootDir: string, onProgress?: (current: number, file: string) => void, excludePatterns?: string[]): string[] {
-  const gitFiles = getGitVisibleFiles(rootDir, excludePatterns)
-  if (gitFiles) {
-    const files: string[] = []
-    let count = 0
-    for (const filePath of gitFiles) {
-      if (isSupportedFile(filePath)) {
-        files.push(filePath)
-        count++
-        onProgress?.(count, filePath)
-      }
-    }
-    return files
-  }
   return scanDirectoryWalk(rootDir, onProgress, excludePatterns)
 }
 
 export async function scanDirectoryAsync(rootDir: string, onProgress?: (current: number, file: string) => void, excludePatterns?: string[]): Promise<string[]> {
-  const gitFiles = getGitVisibleFiles(rootDir, excludePatterns)
-  if (gitFiles) {
-    const files: string[] = []
-    let count = 0
-    for (const filePath of gitFiles) {
-      if (isSupportedFile(filePath)) {
-        files.push(filePath)
-        count++
-        onProgress?.(count, filePath)
-        if (count % 100 === 0) await new Promise<void>(r => setImmediate(r))
-      }
-    }
-    return files
-  }
   return scanDirectoryWalk(rootDir, onProgress, excludePatterns)
 }
 

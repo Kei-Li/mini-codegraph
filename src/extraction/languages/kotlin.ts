@@ -1,5 +1,5 @@
 import type Parser from 'web-tree-sitter'
-import type { NodeInfo, EdgeInfo } from './java.js'
+import type { NodeInfo, EdgeInfo } from './types.js'
 
 export type { NodeInfo, EdgeInfo }
 

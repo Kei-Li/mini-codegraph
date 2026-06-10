@@ -4,7 +4,7 @@ import { logInfo, logError } from '../../logger.js'
 
 function openGraph(path: string) {
   const resolvedPath = resolve(path)
-  const cg = MiniCodeGraph.open(resolvedPath)
+  const cg = MiniCodeGraph.open(resolvedPath, true)
   if (!cg) { logError('No index found.'); process.exit(1) }
   return cg
 }
@@ -118,7 +118,7 @@ export function handleOpenapi(path: string): void {
 export async function handleDiagram(path: string, options: { type: string }): Promise<void> {
   const cg = openGraph(path)
 
-  const { generateArchitectureDiagram, generateServiceDependencyDiagram, generateSequenceDiagram, generateFullTraceDiagram, generateCacheTopologyDiagram, generateTxPropagationDiagram, getAllMermaidDiagrams } = await import('../../mermaid.js')
+  const { generateArchitectureDiagram, generateServiceDependencyDiagram, generateSequenceDiagram, generateFullTraceDiagram, generateCacheTopologyDiagram, generateTxPropagationDiagram, getAllMermaidDiagrams } = await import('../../visualization/mermaid.js')
   const queries = cg.getGraph().getQueries()
 
   switch (options.type) {
