@@ -316,6 +316,19 @@ export function createWorkspaceTools(): ToolDefinition[] {
         }
       },
     },
+    {
+      name: 'mini_cg_lint',
+      description: 'Check architecture rules and layer violations. Enforces dependency rules defined in workspace config. (Feature coming in future release)',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          scope: { type: 'string', description: 'Lint scope: "all" or module name' },
+        },
+      },
+      handler: async () => {
+        return { supported: false, note: 'Architecture lint checks can be configured via workspace.yml' }
+      },
+    },
     createWorkspaceStatusHandler(),
     {
       name: 'mini_cg_summary',

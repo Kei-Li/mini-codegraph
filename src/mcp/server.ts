@@ -97,7 +97,7 @@ export class MCPServer {
             instructions: [
               'mini-codegraph provides code intelligence through a knowledge graph built from AST parsing.',
               '',
-              'You have access to 23+ structured query tools prefixed with mini_cg_. Use tools/list to discover available tools.',
+              'You have access to 32 structured query tools prefixed with mini_cg_. Use tools/list to discover available tools.',
               '',
               'Usage rules:',
               '- Answer structural questions with these tools — do NOT fall back to grep/read.',

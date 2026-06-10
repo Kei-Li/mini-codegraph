@@ -132,6 +132,45 @@ export function createFrameworkTools(): ToolDefinition[] {
       },
     },
     {
+      name: 'mini_cg_dispatch',
+      description: 'Find dispatch/inference targets for a given interface or base class. Traces strategy pattern, AOP, factory method, and reflective dispatch.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          symbol: { type: 'string', description: 'Interface or base class name' },
+        },
+        required: ['symbol'],
+      },
+      handler: async (args, graph) => {
+        const symbol = typeof args.symbol === 'string' ? args.symbol.slice(0, 200) : ''
+        if (!symbol) return { error: 'symbol is required', supported: true }
+        const results = graph.search(symbol, 5)
+        if (results.length === 0) {
+          return { supported: true, note: `No symbol found for '${symbol}'. Use mini_cg_callers and mini_cg_callees for direct call chain analysis.` }
+        }
+        const node = results[0].node
+        const qm = graph.getQueries()
+        const dispatchEdges = qm.getAllEdges().filter(e =>
+          (e.sourceId === node.id || e.targetId === node.id) &&
+          ['dispatch_registration', 'proxy_wraps', 'aop_advises', 'conditional_impl'].includes(e.kind)
+        )
+        const patterns = dispatchEdges.map(e => ({
+          kind: e.kind,
+          sourceId: e.sourceId,
+          targetId: e.targetId,
+          sourceName: qm.getNode(e.sourceId)?.name ?? '',
+          targetName: qm.getNode(e.targetId)?.name ?? '',
+          metadata: e.metadata ? JSON.parse(e.metadata) : {},
+        }))
+        return {
+          symbol: node.name,
+          dispatchPatterns: patterns,
+          total: patterns.length,
+          note: patterns.length === 0 ? 'No dispatch patterns found. Use mini_cg_callers/mini_cg_callees for direct analysis.' : undefined,
+        }
+      },
+    },
+    {
       name: 'mini_cg_mermaid',
       description: 'Generate Mermaid.js diagrams for architecture visualization. Supports architecture, service-dependency, sequence, trace, cache, and transaction diagrams.',
       inputSchema: {

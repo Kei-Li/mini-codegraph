@@ -111,6 +111,42 @@ export function createSearchTools(): ToolDefinition[] {
       },
     },
     {
+      name: 'mini_cg_explore',
+      description: 'Explore workspace structure by project/module/layer. Use this when you need to understand the overall project layout before making changes.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Area or module to explore' },
+        },
+      },
+      handler: async (args, graph) => {
+        const query = typeof args.query === 'string' ? args.query.slice(0, 200) : ''
+        if (!query) {
+          const qm = graph.getQueries()
+          const stats = qm.getStats()
+          const modules = qm.getAllModules()
+          return {
+            query,
+            stats,
+            modules: modules.map(m => ({ id: m.id, name: m.name, language: m.language, buildSystem: m.buildSystem })),
+            tip: 'Use a specific module name or area to explore deeper',
+          }
+        }
+        const results = graph.search(query, 30)
+        return {
+          query,
+          totalResults: results.length,
+          results: results.map(r => ({
+            name: r.node.name,
+            kind: r.node.kind,
+            filePath: r.node.filePath,
+            lines: `${r.node.startLine}-${r.node.endLine}`,
+            qualifiedName: r.node.qualifiedName,
+          })),
+        }
+      },
+    },
+    {
       name: 'mini_cg_semantic_search',
       description: 'Semantic search across codebase using natural language queries. (Feature coming in future release)',
       inputSchema: {

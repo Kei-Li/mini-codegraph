@@ -186,7 +186,7 @@ CREATE TABLE IF NOT EXISTS entry_points (
 
 CREATE INDEX IF NOT EXISTS idx_entry_points_service ON entry_points(service);
 
-/* Enterprise Java additions (ADR-013) */
+/* Enterprise Java additions (ADR-02) */
 CREATE TABLE IF NOT EXISTS service_dependencies (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   source_service TEXT NOT NULL,
